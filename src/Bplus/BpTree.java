@@ -2,15 +2,15 @@ package Bplus;
 
 import java.util.*;
 
-public class BpTree<Index extends Comparable<Index>>{
-    private BpNode<Index> root; //根节点
-    private int order;           //阶                   B+数的阶数要>=3否则就成了二叉树了
+public class BpTree<Page extends Comparable<Page>>{
+    private BpNode<Page> root; //根节点
+    private int order;      //阶                   B+数的阶数要>=3否则就成了二叉树了
 
     //创建一个包含BpNode节点地址 和 进入的是该节点中的第几阶 的内部类
     private class EnterNode{
-        BpNode<Index> node;
+        BpNode<Page> node;
         int EnterIndex;
-        EnterNode(BpNode<Index> ThisNode,int InsertIndex){
+        EnterNode(BpNode<Page> ThisNode,int InsertIndex){
             node = ThisNode;
             EnterIndex = InsertIndex;
         }
@@ -20,12 +20,12 @@ public class BpTree<Index extends Comparable<Index>>{
     public BpTree(int order)
     {
         this.order = order;
-        root = new BpNode<Index>(true,order);  //根节点默认是叶子节点
+        root = new BpNode<Page>(true,order);  //根节点默认是叶子节点
     }
     //插入
-    public void insert(Index index)
+    public void insert(Page index)
     {
-        BpNode<Index> NowNode = root; //现在正在处理的Node
+        BpNode<Page> NowNode = root; //现在正在处理的Node
         Stack<EnterNode> stack = new Stack<>();
         while(!NowNode.getIsLeaf()){   //递推到NowNode是叶子节点为止
             int EnterIndex = NowNode.getEnterOrder(index);        //所进入的阶
@@ -38,7 +38,7 @@ public class BpTree<Index extends Comparable<Index>>{
         boolean IsSpill = NowNode.isSpill();        //如果没溢出，该函数到此结束
         while(IsSpill)
         {
-            BpNode<Index> parent = null;
+            BpNode<Page> parent = null;
             if(NowNode.getIsLeaf())   //是叶子
                 parent = SpiltLeafNode(NowNode);   //分裂后的父母节点
             else                   //不是叶子
@@ -57,11 +57,11 @@ public class BpTree<Index extends Comparable<Index>>{
         }
     }
     //分裂叶子节点     并返回父母节点
-    private BpNode<Index> SpiltLeafNode(BpNode<Index> Node) {   //分裂叶子节点
-        List<Index> Indexs = Node.getIndexs();
+    private BpNode<Page> SpiltLeafNode(BpNode<Page> Node) {   //分裂叶子节点
+        List<Page> Indexs = Node.getIndexs();
         int Mid = Indexs.size() / 2;  //中分
-        BpNode<Index> parent = new BpNode<>(false,this.order);  //非叶子节点
-        BpNode<Index> Right = new BpNode<>(true,this.order,new ArrayList<>(Indexs.subList(Mid,Indexs.size())),null);    //右叶子节点
+        BpNode<Page> parent = new BpNode<>(false,this.order);  //非叶子节点
+        BpNode<Page> Right = new BpNode<>(true,this.order,new ArrayList<>(Indexs.subList(Mid,Indexs.size())),null);    //右叶子节点
 
         parent.insert(Indexs.get(Mid));      //将中分位置插入父母节点
         parent.getChildren().add(Node);     //左节点
@@ -74,12 +74,12 @@ public class BpTree<Index extends Comparable<Index>>{
     }
 
     //分裂非叶子节点
-    private BpNode<Index> SpiltNode(BpNode<Index> Node){
-        List<Index> Indexs = Node.getIndexs();
-        List<BpNode<Index>> children = Node.getChildren();
+    private BpNode<Page> SpiltNode(BpNode<Page> Node){
+        List<Page> Indexs = Node.getIndexs();
+        List<BpNode<Page>> children = Node.getChildren();
         int Mid = Indexs.size() / 2;  //中分
-        BpNode<Index> parent = new BpNode<>(false,this.order);  //非叶子节点
-        BpNode<Index> Right = new BpNode<>(false,this.order,
+        BpNode<Page> parent = new BpNode<>(false,this.order);  //非叶子节点
+        BpNode<Page> Right = new BpNode<>(false,this.order,
                 new ArrayList<>(Indexs.subList(Mid+1,Indexs.size())),new ArrayList<>(children.subList(Mid+1,children.size())));    //右叶子节点
 
         parent.insert(Indexs.get(Mid));      //将中分位置插入父母节点
@@ -92,13 +92,13 @@ public class BpTree<Index extends Comparable<Index>>{
         return parent;
     }
     //将单索引和多索引的节点拼接
-    private  void MergeNode(BpNode<Index> More,BpNode<Index> One,int EnterIndex)  //外加所要插入阶
+    private  void MergeNode(BpNode<Page> More,BpNode<Page> One,int EnterIndex)  //外加所要插入阶
     {
         if(One.getIndexs().size()!=1)
             throw new RuntimeException("父母节点的索引大小不为1");
 
-        Index index = One.getIndexs().get(0);
-        List<BpNode<Index>> MoreChildren = More.getChildren();    //More节点的子节点列表
+        Page index = One.getIndexs().get(0);
+        List<BpNode<Page>> MoreChildren = More.getChildren();    //More节点的子节点列表
         More.getIndexs().add(EnterIndex, index);      //索引拼接
 
         MoreChildren.remove(EnterIndex);
@@ -132,7 +132,7 @@ public class BpTree<Index extends Comparable<Index>>{
     }
 
 }
-class BpNode<Index extends Comparable<Index>>{  //索引(Index)    //接口Comparable实现比较
+class BpNode<Page extends Comparable<Page>>{  //索引(Page)    //接口Comparable实现比较
     /*
         节点中的操作仅仅局限于节点
     */
@@ -140,27 +140,27 @@ class BpNode<Index extends Comparable<Index>>{  //索引(Index)    //接口Compa
 
     private static final int DEFAULT_ORDER = 4;  //默认阶数
     private int order; // 树的阶数
-    private List<Index> indexs; // 节点中的索引
+    private List<Page> pages; // 节点中的索引
 
-    private List<BpNode<Index>> children; // 子节点
+    private List<BpNode<Page>> children; // 子节点
     private boolean isLeaf; // 是否为叶子节点
-    public BpNode<Index> nexNode; // 指向下一个叶子节点
-    public BpNode<Index> preNode; //指向上一个叶子节点
+    public BpNode<Page> nexNode; // 指向下一个叶子节点
+    public BpNode<Page> preNode; //指向上一个叶子节点
 
     public BpNode(boolean isLeaf,int order)
     {
         this.order = order;
-        indexs = new ArrayList<>(); //初始化索引表
+        pages = new ArrayList<>(); //初始化索引表
         this.isLeaf = isLeaf;
         nexNode = null;  preNode = null; children = null;   //初始化都为null
         if(!isLeaf)
             children = new ArrayList<>();
     }
     //带有索引列表的构造函数
-    public BpNode(boolean isLeaf,int order,List<Index> indexs,List<BpNode<Index>> children)
+    public BpNode(boolean isLeaf, int order, List<Page> pages, List<BpNode<Page>> children)
     {
         this.order = order;
-        this.indexs = indexs; //初始化索引表
+        this.pages = pages; //初始化索引表
         this.isLeaf = isLeaf;
         nexNode = null;  preNode = null; this.children = null;   //初始化都为null
         if(!isLeaf)        //不是叶子节点
@@ -168,10 +168,10 @@ class BpNode<Index extends Comparable<Index>>{  //索引(Index)    //接口Compa
     }
 
     //节点内插入
-    public void insert(Index index)
+    public void insert(Page page)
     {
         //如果在达到上限仍要插入                  //size() <= order - 1
-        if(this.indexs.size() == order )        //例如order为4  最大上限也只能为4，理论为3
+        if(this.pages.size() == order )        //例如order为4  最大上限也只能为4，理论为3
             try {
                 throw new Exception("B树节点已经满") ;
             } catch (Exception e) {
@@ -179,45 +179,45 @@ class BpNode<Index extends Comparable<Index>>{  //索引(Index)    //接口Compa
             }
 
         //索引列表为空
-        if(this.indexs.isEmpty()) {
-            indexs.add(index);
+        if(this.pages.isEmpty()) {
+            pages.add(page);
             return;
         }
 
         int newIndex=0;  //新索引插入的位置
-        while(newIndex < indexs.size())
+        while(newIndex < pages.size())
         {
-            if(index.compareTo(indexs.get(newIndex))<0)
+            if(page.compareTo(pages.get(newIndex))<0)
                 break;
             newIndex++;
         }    //确定好了新索引该插入的位置
-        indexs.add(newIndex,index);
+        pages.add(newIndex, page);
     }
-    //查看索引是否包含在该节点中
-    public boolean contain(Index index)
-    {for(Index i : indexs)  if(i.equals(index)) return true;
+    //查看索引是否包含在该中
+    public boolean contain(Page page)
+    {for(Page i : pages)  if(i.equals(page)) return true;
         return false;}
 
     //比较索引列表，一旦有比输入索引大的就返回    比如索引0比输入索引大，返回0
-    public int getEnterOrder(Index index){
+    public int getEnterOrder(Page page){
         int i = 0;
-        while(i<indexs.size() && index.compareTo(indexs.get(i))>0)
+        while(i< pages.size() && page.compareTo(pages.get(i))>0)
             i++;
         return i;
     }
     
     //返回当前节点是否满了
-    public boolean isFull(){return this.order == this.indexs.size()+1;}
+    public boolean isFull(){return this.order == this.pages.size()+1;}
     //返回当前节点是否溢出了
-    public boolean isSpill(){return this.order == this.indexs.size();}
+    public boolean isSpill(){return this.order == this.pages.size();}
     //返回阶
     public int getOrder(){return this.order;}
     //返回是否为叶子节点
     public boolean getIsLeaf(){return this.isLeaf;}
     //返回子节点们
-    public List<BpNode<Index>> getChildren(){return this.children;}
+    public List<BpNode<Page>> getChildren(){return this.children;}
     //返回索引列表
-    public List<Index> getIndexs(){return this.indexs;}
+    public List<Page> getIndexs(){return this.pages;}
 
 
 
