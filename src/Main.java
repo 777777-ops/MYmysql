@@ -1,7 +1,12 @@
-import MyTable.Table;
+import Memory.ByteTools;
+import Memory.IndexRecord;
 
 import java.io.*;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Stack;
 
 public class Main {
     public static void main2(String[] args) {
@@ -29,10 +34,15 @@ public class Main {
 
     }
 
-    public static void main1(String[] args) {
-        ByteBuffer buffer = ByteBuffer.allocate(10);
-        File currentDir = new File("");
-        String path = currentDir.getAbsolutePath();
-        System.out.println("当前目录: " + path);
+    public static void main(String[] args) {
+
+        Stack<String> s1 = new Stack<>();
+        s1.push("a");
+        s1.push("b");
+        s1.push("c");
+        Stack<String> s2 = new Stack<>();
+        s2.addAll(s1);
+
     }
+
 }
