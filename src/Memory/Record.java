@@ -1,126 +1,134 @@
 package Memory;
 
-import MyTable.Table;
+import DataIO.BytesIO;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.Map;
+/*
+    default_no      : 根据table中default_key给出
+    indexKey_off    : 创建新Record时默认为0
+    indexKey        : 创建新Record时默认为null
+*/
 
 //叶子页中的行记录
 public class Record extends IndexRecord{
-    //常量
-    public static final byte TYPE_NULL = 0x00;       //为空标志
-    public static final byte TYPE_STRING = 0x01;     //字符串类型
-    public static final byte TYPE_INT = 0x02;        //整数类型
-    public static final byte TYPE_FLOAT = 0x03;      //小数类型
-    public static final byte TYPE_BOOLEAN = 0x04;    //布尔类型
-    //表数据
-    public Table table;          //通过组合模式将表和行数据组合在一起，使用继承很不方便  (只有叶子记录需要)
     //行数据
-    public HashMap<String, Object> valuesMap;  //建立一个根据字段名字查询数据的hashmap   (核心数据)
+    public HashMap<String, Object> valuesMap = new HashMap<>();         //建立一个根据字段名字查询数据的hashmap   (核心数据)  /*TODO*/
+    public int heap_no;                              //  创建新Record时表给出
 
-    //创建一条新的行记录  (普通叶子记录)
-    public Record(Table table,HashMap<String, Object> valuesMap) {
-        this.table = table;
-        this.rec_type = 0x00;                   //普通叶子记录
+
+    //创建一条新的行记录  (普通叶子记录) 由页分配本记录的偏移量、下一条记录的地址、以及该索引记录的类型  (完整创建)
+    public Record(byte rec_type,HashMap<String,Object> valuesMap,int offset,IndexRecord next_record,Table table){
+        super(rec_type,null,offset,next_record,table);
+
+        this.heap_no = table.getDefault_key(1);
         this.valuesMap = valuesMap;
-        if(table.getPrimaryKey() == null) index_key = table.getDefault_key(1);
-        else{ index_key = valuesMap.get(table.getPrimaryKey());}
-
+        //主键
+        if(table.getPrimaryKey() == null) this.index_key = heap_no;
+        else{ this.index_key = valuesMap.get(table.getPrimaryKey()); }
     }
 
-    public Record(byte rec_type, Object index_key) {
-        super(rec_type, index_key);
+    //反序列化行记录
+    public Record(byte rec_type,Object index_key,int offset,int next_record_offset,
+                  byte delete_flag,byte n_owned,Table table,
+                  HashMap<String,Object> valuesMap,int heap_no){
+
+        super(rec_type,index_key,offset,next_record_offset,delete_flag,n_owned,table);
+        this.valuesMap = valuesMap;
+        this.heap_no = heap_no;
     }
 
-    //将本条记录序列化
+    /**************************逻辑操作*****************************/
+
+    /**************************序列*********************************/
+
+    /*
+    //反序列出下一条记录   (不建议单独使用)
+    protected void deSerializeNextRecord(){
+        if(this.next_record_offset == 0)  this.next_record = null; //没有下一条记录了
+        if(this.next_record != null)  throw new RuntimeException("序列化下一条记录时，next_record已不为null");
+
+        byte[] data = BytesIO.readDataInto(table.calculateRecordLength(),this.next_record_offset,table.table_name);
+        next_record = IndexRecord.deSerialize(data,table);
+    }
+
+     */
+
+    //将本条记录序列化  Record中的伪最大最小值都是11字节
     public byte[] serialize() {
-        byte[] bytes = new byte[0];
-        for (String str : table.getFieldNames()) {
-            int fieldMark = table.getMark(str);                  //字段的标识
-            Class<?> type = table.getFieldType(str);             //字段类型
-            Object obj = valuesMap.get(str);                     //字段相应的数据
-            byte[] b2 = serializeSingleObject(obj, type, fieldMark);//根据字段类型、字段标识、数据生成的二进制数据
-            bytes = ByteTools.concatBytes(bytes, b2);             //将二进制数据都拼接起来
-        }
-
-        return bytes;
-    }
-
-    //将一个Object转化为字节数组   该Object只能是规定的几个数据类型
-    private byte[] serializeSingleObject(Object obj, Class<?> field, int fieldMark)  //字段数据，字段数据类型，字段标识
-    {
-        //字段标识为0-126    过多抛出异常
-        if (fieldMark > 126) throw new RuntimeException("字段过多");
-        byte mark = (byte) fieldMark;
-        //如果字段数据为null
-        if (obj == null)
-            return new byte[]{TYPE_NULL, mark};   //返回空标志
-        //创建一个新字节数组
-        byte[] bytes;
-        ByteBuffer buffer;
-
-        if (field == String.class)   //字符串
+        //行头序列化
+        byte[] row_head = incompleteSerialize();   //未序列化主键值 和 行字节长度   11字节
+        if(rec_type != 0x00)   //如果非普通记录
+            return row_head;
+        //索引序列化
+        byte[] index_bytes;
+        if(table.getPrimaryKey() == null)  //无主键
+            index_bytes = ByteTools.serializeSingleObject(index_key,Integer.class,(short)0);  //字段标识-1用于检错
+        else  //有主键
         {
-            byte[] strBytes = ((String) obj).getBytes(StandardCharsets.UTF_8);
-            buffer = ByteBuffer.allocate(1 + 1 + 4 + strBytes.length)
-                    .put(TYPE_STRING)
-                    .put(mark)
-                    .putInt(strBytes.length)         //最大能记录2的31次方长度的字符串  //要限制
-                    .put(strBytes);
-        } else if (field == int.class) {
-            buffer = ByteBuffer.allocate(1 + 1 + 4)
-                    .put(TYPE_INT)
-                    .put(mark)
-                    .putInt((Integer) obj);
-        } else if (field == float.class) {
-            buffer = ByteBuffer.allocate(1 + 1 + 4)
-                    .put(TYPE_FLOAT)
-                    .put(mark)
-                    .putFloat((Float) obj);
-        } else if (field == boolean.class) {
-            buffer = ByteBuffer.allocate(1 + 1 + 1)
-                    .put(TYPE_BOOLEAN)
-                    .put(mark)
-                    .put((byte) (((boolean) obj) ? 1 : 0));
-        } else {
-            bytes = new byte[0];
-            throw new RuntimeException("非法类型");
+            String primaryName = table.getPrimaryKey();
+            Class<?> type = table.getFieldType(primaryName);
+            short length = table.getFieldLength(primaryName);
+            index_bytes = ByteTools.serializeSingleObject(index_key,type,length);
+        }
+        //序列化行数据
+        byte[] values_bytes = new byte[0];
+        for (Map.Entry<String, Table.TableColumn> map : table.getFieldEntry()) {
+            String name = map.getKey();                           //字段名
+            Class<?> type = map.getValue().type;
+            short length =map.getValue().length;
+            Object obj = valuesMap.get(name);                     //字段相应的数据
+            byte[] b2 = ByteTools.serializeSingleObject(obj, type,length);//根据字段类型、数据生成的二进制数据
+            values_bytes = ByteTools.concatBytes(values_bytes, b2);             //将二进制数据都拼接起来
         }
 
-        bytes = buffer.array();
-        return bytes;
+        ByteBuffer buffer = ByteBuffer.allocate(HEAD_LENGTH + 4 + index_bytes.length + values_bytes.length + table.RecordLengthAdd);
+        //记录头
+        buffer.put(row_head);
+        //记录独特序号
+        buffer.putInt(heap_no);
+        //索引值
+        buffer.put(index_bytes);
+        //行数据
+        buffer.put(values_bytes);
+
+        return buffer.array();
     }
 
-    //反序列化   //静态可被外接
-    public static HashMap<String, Object> deSerialize(byte[] data, Table table) {
-        ByteBuffer buffer = ByteBuffer.wrap(data);  //小字端，模拟innodb的小字端
-        HashMap<String, Object> values = new HashMap<>();
-        while (buffer.hasRemaining()) {
+    //部分反序列化记录数据
+    public static LinkedHashMap<String, Object> deSerializeData(byte[] data, Table table) {
+        ByteBuffer buffer = ByteBuffer.wrap(data);
+        LinkedHashMap<String, Object> values = new LinkedHashMap<>();
+        for (Map.Entry<String, Table.TableColumn> map : table.getFieldEntry()) {
+            String fieldName = map.getKey();
             byte type = buffer.get();      //字段类型
-            int mark = buffer.get();    //字段标识
-            String fieldName = table.getFieldName(mark);
-            switch (type) {
-                case (TYPE_NULL):
-                    values.put(fieldName, null);
-                    break;
-                case (TYPE_STRING):
-                    int length = buffer.getInt();                          //字符串长度
-                    byte[] strBytes = new byte[length];
-                    buffer.get(strBytes);
-                    values.put(fieldName, (new String(strBytes, StandardCharsets.UTF_8)));
-                    break;
-                case (TYPE_INT):
-                    values.put(fieldName, buffer.getInt());
-                    break;
-                case (TYPE_FLOAT):
-                    values.put(fieldName, buffer.getFloat());
-                    break;
-                case (TYPE_BOOLEAN):
-                    values.put(fieldName, buffer.get() == 1);
-            }
+            short length = map.getValue().length;
+            values.put(fieldName,ByteTools.deSerializeSingleObject(buffer,type,length));
         }
         return values;
-
     }
+
+    /**********************************************************/
+
+    public Object[] getNode_All(){
+        Object[] objects = new Object[6 + valuesMap.size()];
+        objects[0] = index_key;
+        objects[1] = delete_flag;
+        objects[2] = offset;
+        objects[3] = rec_type;
+        objects[4] = n_owned;
+        objects[5] = next_record_offset;
+
+        int index = 6;
+        for (Map.Entry<String, Object> entry : valuesMap.entrySet()) {
+            objects[index++] = entry.getValue();
+        }
+        return objects;
+    }
+
+    /*************************************************/
+
+
 }
