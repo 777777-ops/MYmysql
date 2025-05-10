@@ -1,10 +1,6 @@
 package Memory;
 
-import DataIO.BytesIO;
-
-import java.nio.Buffer;
 import java.nio.ByteBuffer;
-import java.util.HashMap;
 
 import static Memory.ByteTools.deSerializeSingleObject;
 
@@ -142,9 +138,9 @@ public abstract class IndexRecord implements Comparable<IndexRecord>{
             //反序列左页偏移量
             leftPage_offset = buffer.getInt();
             //索引值反序列化
-            byte type = buffer.get();
-            short length = table.getFieldLength(table.getPrimaryKey());
-            index_key = deSerializeSingleObject(buffer,type,length);
+            short length = 0;
+            if(table.getPrimaryKey() != null){length = table.getFieldLength(table.getPrimaryKey());}
+            index_key = deSerializeSingleObject(buffer,length);
             //实例化
             instance = new IndexKey(rec_type,index_key,offset,next_record_offset,
                     delete_flag,n_owned,leftPage_offset,table);
@@ -154,16 +150,13 @@ public abstract class IndexRecord implements Comparable<IndexRecord>{
         {
             int heap_no = buffer.getInt();           //记录独特的序号标志
             Object index_key;                        //索引值
-            HashMap<String,Object> values;  //数据
+            Object[] values;  //数据
             //索引值反序列化
-            byte type = buffer.get();
-            short length = table.getFieldLength(table.getPrimaryKey());
-            index_key = deSerializeSingleObject(buffer,type,length);
+            short length = 0;
+            if(table.getPrimaryKey() != null){length = table.getFieldLength(table.getPrimaryKey());}
+            index_key = deSerializeSingleObject(buffer,length);
             //记录数据反序列化
-            int[] valueOffset = table.getValueOffset();
-            byte[] record_bytes = new byte[valueOffset[valueOffset.length - 1]];   //实际长度减去现已读取的字节长度
-            buffer.get(record_bytes);
-            values = Record.deSerializeData(record_bytes,table);
+            values = Record.deSerializeData(buffer,table);
             //实例化
             instance = new Record(rec_type,index_key,offset,next_record_offset,delete_flag,
                     n_owned,table,values,heap_no);

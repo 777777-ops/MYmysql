@@ -6,7 +6,6 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableColumn;
 import java.awt.*;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -26,7 +25,7 @@ public class RootFrame extends JFrame {
 
         setTitle("ROOT(逻辑测试)");
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        setSize(1200, 900);
+        setSize(1200, 400);
 
         // 添加主面板到框架
         add(container, BorderLayout.CENTER);
@@ -36,6 +35,22 @@ public class RootFrame extends JFrame {
 
         setVisible(true);
 
+    }
+
+    public RootFrame(Table table){
+        this.table = table;
+
+        setTitle("ROOT(逻辑测试)");
+        setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+        setSize(1200, 400);
+
+        // 添加主面板到框架
+        add(container, BorderLayout.CENTER);
+
+        // 默认显示根节点
+        showPageNodes(table.getRoot().getPage_offset() + "");
+
+        setVisible(true);
     }
 
     //显示某一页的属性  对话窗
@@ -80,7 +95,7 @@ public class RootFrame extends JFrame {
         JPanel card = new JPanel(new BorderLayout());
 
         //1.标题
-        JLabel titleLabel = new JLabel(page.getPage_offset()+"", SwingConstants.CENTER);
+        JLabel titleLabel = new JLabel("LEVEL: " + page.getPage_level() + "      PAGE_OFFSET: " + page.getPage_offset(), SwingConstants.CENTER);
         titleLabel.setFont(new Font("微软雅黑", Font.BOLD, 24));
         card.add(titleLabel, BorderLayout.NORTH);
 

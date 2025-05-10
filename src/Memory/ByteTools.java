@@ -90,7 +90,8 @@ public class ByteTools {
     }
 
     //单个数据反序列化，将单个数据从字节数组中提取出来，并且移动了buffer游标
-    protected static Object deSerializeSingleObject(ByteBuffer buffer,byte type,short length) {  //传入该字段的类型
+    protected static Object deSerializeSingleObject(ByteBuffer buffer,short length) {  //传入该字段的类型
+        byte type = buffer.get();
         switch (type) {
             case (TYPE_NULL):
                 return null;
