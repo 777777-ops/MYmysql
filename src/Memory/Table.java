@@ -23,15 +23,15 @@ public class Table {
     */
     //表信息
     public String table_name;
-    public /*TODO*/ LinkedHashMap<String,TableColumn> fields;  //根据字段名字寻找字段信息   字段集
+    public /*TODO*/ LinkedHashMap<String,TableColumn> fields = new LinkedHashMap<>();  //根据字段名字寻找字段信息   字段集
     private Page root;                           //该表的根页
     private String primaryKey;                   //主键的名字  //主键如果没有就是null  //索引记录中的的index_key永远不为null
     private int default_key;                     //如果没有主键，默认的主键
     private int last_offset;                     //表文件中最后一个可以被插入的偏移量指针
     private int table_used;                      //表文件大小           单位B
-    private int record_maxLength;                //记录字节的总占用长度（用于检测溢出）  //下面还有一个实际占用长度(不常用)
+    private int record_maxLength;                //记录字节的总占用长度（用于检测溢出）
+    public /*TODO*/ HashSet<String> indexSet = new HashSet<>();            //该表中已创建的索引集合
     //不用写入文件中的变量
-    private int[] valueOffset;                   //各个字段数据的数据头
     private int index_length;                    //主键字节长度(包括索引记录头的)
     private HashMap<Page,Integer> page_cache;    //页缓冲池
     //表可改变的全局变量  (写入)
@@ -49,16 +49,24 @@ public class Table {
         public boolean isPrimary;       //是否为主键
         public boolean couldRepeated;   //能否被重复
 
+        public short offset;            //字段所在的字节位置
+        public int index;               //字段在数据数组的下标  //不放入磁盘  //在字段生成时设置
+
         //初始化 字符串 无约束
         public TableColumn(Class<?> type,short length) {
-            this.type = type;this.length = length; couldNull = true; isPrimary = false; couldRepeated = true;
+            this.type = type;this.length = length;
+            couldNull = true; isPrimary = false; couldRepeated = true;   //默认值
         }
+
         //初始化 有约束
-        public TableColumn(Class<?> type,short length,boolean couldNull,boolean isPrimary,boolean isRepeated){
-            this.type = type;this.length = length; this.couldNull = couldNull; this.isPrimary = isPrimary; this.couldRepeated = isRepeated;
+        public TableColumn(Class<?> type,short length
+                ,boolean couldNull,boolean isPrimary,boolean isRepeated){
+            this.type = type;this.length = length;
+            this.couldNull = couldNull; this.isPrimary = isPrimary; this.couldRepeated = isRepeated;
         }
-        //初始化 根据字节标识设置约束
-        public TableColumn(Class<?> type,short length,byte constraint) {
+
+        //初始化 根据字节标识设置约束  用于反序列
+        public TableColumn(Class<?> type,short length,byte constraint,short offset) {
             couldRepeated = false; isPrimary = false; couldRepeated = false;
             int sum = (int)constraint;
             if(sum >= 4){couldRepeated = true; sum -= 4;}
@@ -66,6 +74,7 @@ public class Table {
             if(sum >= 1){couldNull = true; sum -= 1;}
             this.type = type;
             this.length = length;
+            this.offset = offset;
         }
 
         //返回该字段属性对应的字节标识
@@ -79,7 +88,7 @@ public class Table {
         }
     }
 
-    //该类用于页分裂和页合并  A是父页  B是该页在父页中的节点的前一个节点
+    //该类用于页分裂和页合并 用于存储量变量，变量一是页地址，变量二是在该页中的某个节点
     public static class Pair{
         public int page_offset;
         public int page_pre_offset;
@@ -109,9 +118,10 @@ public class Table {
         this.fields = fields;
         this.primaryKey = primaryName;
         //根据给出的变量初始化的数据
-        valueOffset = calculateRecordLength();
-        record_maxLength = valueOffset[valueOffset.length - 1] + calculateIndexLength() + Page.RECORD_HEAD + RecordLengthAdd;
+        initColumnOffset();         //给每个字段都添加上偏移量
+        record_maxLength = getFieldsLength() + calculateIndexLength() + Page.RECORD_HEAD + RecordLengthAdd;
         index_length = calculateIndexLength() + Page.INDEX_HEAD;
+        if(primaryName != null) indexSet.add(primaryName);
 
     }
 
@@ -138,7 +148,8 @@ public class Table {
 
         //根据给出的变量初始化的数据
         index_length = calculateIndexLength() + Page.INDEX_HEAD;
-        valueOffset = calculateRecordLength();
+        initValueIndex();
+        if(primaryName != null ) indexSet.add(primaryName);
     }
 
     /*
@@ -147,48 +158,181 @@ public class Table {
          父页的偏移量
      */
 
-    /****************************查询********************************/
+    /****************************字段**********************************/
 
-    /*
-    //根据主键查询是否在表中  用于检查主键是否存在表中
-    public boolean contain(Object index_key){
-        Page page = root;
-        while(page instanceof PageNoLeaf)
-        {
-            int offset = ((PageNoLeaf)page).findEnterPage(index_key);      //所要进入的页的偏移量
-            page = deSerializePage(offset);
+    //插入字段   要找到字段字节数组中可被插入的物理位置
+    public void insertColumn(String name,TableColumn column){
+        int[] arr = new int[getFieldsLength()];
+        int columnLength = ByteTools.singleObjectLength(column.type,column.length);
+        //两次遍历arr  第一次标记  第二次找位置
+        for (TableColumn value : fields.values()) {
+            int index = value.offset;
+            int byteLength = ByteTools.singleObjectLength(value.type,value.length);
+            //将已经有数据的字节位置首尾打上标记
+            arr[index] = index + byteLength - 1;
+            arr[index + byteLength - 1] = -1;
         }
-        //page现在是叶子页了   直接插入
-        return ((PageLeaf)page).contain(index_key);
+        //第二次：找位置   //维护两个指针计算p1是头 p2是尾f
+        int p1 = 0;
+        int head = p1;     //结果
+        while(true){
+            while(p1 < arr.length && arr[p1] > 0){
+                p1 = arr[p1] + 1;
+            }
+            int length = 0;
+            head = p1;
+            while(p1 < arr.length && arr[p1] == 0){
+                p1++; length++;
+            }
+            if(length >= columnLength || p1 == arr.length){break;}
+        }
+        //检查是否要触发页溢出 或 页重整
+        if(head + columnLength + calculateIndexLength() + Page.RECORD_HEAD > this.record_maxLength){
+            /*TODO*/
+            throw new RuntimeException("页字段字节溢出了,暂不处理该细节");
+        }
+        //插入
+        column.offset = (short)head;
+        fields.put(name,column);
     }
 
-     */
+    //表创建:初始化字段集：给每个字段都添加上偏移量   用于创表初期 以及 字段整理碎片化
+    private void initColumnOffset(){
+        int index = 0;
+        short last_offset = 0;
+        for (TableColumn value : fields.values()) {
+            value.offset = last_offset;                                             //设置偏移量
+            value.index = index++;
+            last_offset += ByteTools.singleObjectLength(value.type,value.length);   //自增
+        }
+    }
 
-    //根据主键查询某一记录的信息   private
-    private LinkedHashMap<String,Object> searchMap(Object index_key){
+    //反序列:
+    private void initValueIndex(){
+        int index = 0;
+        for (TableColumn column : fields.values()) {
+            column.index = index++;
+        }
+    }
+
+    //返回字段集合在字节数组中的总长度
+    public int getFieldsLength(){
+        int last_offset = 0;
+        for (TableColumn value : fields.values()) {
+            int offset = value.offset + ByteTools.singleObjectLength(value.type,value.length);
+            if(offset > last_offset)
+                last_offset = offset;
+        }
+        return last_offset;
+    }
+
+    /****************************查询********************************/
+    /*
+        查询有三种  一是主键的B+查询  二是二次索引的双B+查询  三是顺序查询
+    */
+    public static class SearchResult{
+        public int page_offset;          //页偏移量
+        public int node_prev;            //节点的前一个节点
+        public Object[] values;          //节点数据
+        public SearchResult(int page_offset,int node_prev,Object[] values){
+            this.page_offset = page_offset; this.node_prev = node_prev; this.values = values;
+        }
+    }
+
+    //获取一张表中在顺序逻辑上的第一页
+    private int getFirstPageOffset(){
         Page page = root;
-        while(page instanceof PageNoLeaf)
+        while(page instanceof PageNoLeaf p){
+            int page_offset = p.getLeftPage(p.getNextOffset(Page.MIN));
+            page = deSerializePage(page_offset);
+        }
+        return page.page_offset;
+    }
+
+    //根据主键查询某一记录的信息   （B+）
+    public List<SearchResult> searchPrimary(Object index_key,String operator){
+        Page page = root;
+        while(page instanceof PageNoLeaf p)
         {
-            PageNoLeaf p = (PageNoLeaf) page;
             int prev = p.Search(index_key);     //所要进入页的前节点
             int next = p.getNextOffset(prev);   //所要进入页的后节点
             //如果next节点等于index_key  prev和next全部后移
             if(p.compare(index_key,next) == 0){prev = next ;next = p.getNextOffset(next);}
             page = deSerializePage(p.getLeftPage(next));
         }
-        return  ((PageLeaf)page).searchRecord(index_key);
+        PageLeaf leaf = ((PageLeaf)page);
+        SearchResult head = leaf.searchValues(index_key);      //头节点
+        List<SearchResult> result = new ArrayList<>();         //结果
+        switch (operator){
+            case "==": {
+                int prt = leaf.getNextOffset(head.page_offset);
+                if (leaf.compare(index_key, prt) == 0) result.add(head);
+                return result;
+            }
+            case ">=": {
+                int page_offset = head.page_offset;
+                while (page_offset != 0) {
+                    leaf = (PageLeaf) deSerializePage(page_offset);
+                    int prt;
+                    if(page_offset == head.page_offset) prt =leaf.getNextOffset(head.node_prev);
+                    else prt = leaf.getNextOffset(Page.MIN);
+                    int prev = head.node_prev;
+                    while (prt != Page.MAX) {
+                        result.add(new SearchResult(page_offset,prev,leaf.getValues(prt)));
+                        prev = prt;
+                        prt = leaf.getNextOffset(prt);
+                    }
+                    page_offset = leaf.page_next_offset;
+                }
+                return result;
+            }
+            case "<=":{
+                int page_offset = getFirstPageOffset();
+                while (page_offset != head.page_offset){
+                    leaf = (PageLeaf) deSerializePage(page_offset);
+                    int prt = leaf.getNextOffset(Page.MIN);
+                    int prev = Page.MIN;
+                    while (prt != Page.MAX) {
+                        result.add(new SearchResult(page_offset,prev,leaf.getValues(prt)));
+                        prev = prt;
+                        prt = leaf.getNextOffset(prt);
+                    }
+                    page_offset = leaf.page_next_offset;
+                }
+                //此时的page_offset到了head页
+                leaf = (PageLeaf) deSerializePage(page_offset);
+                int prt = leaf.getNextOffset(Page.MIN);
+                int prev = Page.MIN;
+                while(prev != head.node_prev){
+                    result.add(new SearchResult(page_offset,prev,leaf.getValues(prt)));
+                    prev = prt;
+                    prt = leaf.getNextOffset(prt);
+                }
+                //此时prt就是目标节点 需判断是否 ==
+                if (leaf.compare(index_key, prt) == 0) result.add(head);
+                return result;
+            }
+            default: throw new RuntimeException("不可能到达的语句");
+        }
+
     }
 
-    //根据主键查询某一记录的信息   外接
-    public void search(Object index_key){
-        LinkedHashMap<String,Object> map = searchMap(index_key);
-        if(map == null)
-            System.out.println("表中无符合条件的记录");
-        else{
-            for (Map.Entry<String, Object> entry: map.entrySet()) {
-                System.out.println(entry.getKey() + ": " + entry.getValue());
+    //所有的行数据全部都呈现出来  （线性）
+    public List<SearchResult> searchLinked(){
+        List<SearchResult> result = new ArrayList<>();
+        int page_offset = getFirstPageOffset();
+        while(page_offset != 0){
+            PageLeaf leaf = (PageLeaf) deSerializePage(page_offset);
+            int prt = leaf.getNextOffset(Page.MIN);
+            int prev = Page.MIN;
+            while(prt != Page.MAX){
+                result.add(new SearchResult(page_offset,prev,leaf.getValues(prt)));
+                prev = prt;
+                prt = leaf.getNextOffset(prt);
             }
+            page_offset = leaf.page_next_offset;
         }
+        return result;
     }
 
     /****************************插入*************************************/
@@ -225,20 +369,19 @@ public class Table {
     }
 
     //插入一条新记录
-    public void insertRec(LinkedHashMap<String,Object> valuesMap) throws RuntimeException{
+    private void insertRec(Object[] values) throws RuntimeException {
 
         //从table中获取独特标识
         int heap_no = this.getDefault_key(1);
         //获取主键
         Object index_key;
         if(primaryKey == null) index_key = heap_no;
-        else index_key = valuesMap.get(primaryKey);
+        else index_key = values[getFieldIndex(primaryKey)];
         //定位到叶子页
         Stack<Pair> stack = new Stack<>();
         Page page = root;
-        while(page instanceof PageNoLeaf)
+        while(page instanceof PageNoLeaf p)
         {
-            PageNoLeaf p = (PageNoLeaf) page;
             int prev = p.Search(index_key);     //所要进入页的前节点
             int next = p.getNextOffset(prev);   //所要进入页的后节点
             //如果next节点等于index_key  prev和next全部后移
@@ -251,7 +394,7 @@ public class Table {
         //page现在是叶子页了
         if(((PageLeaf)page).contain(index_key))  throw new RuntimeException("该表中已有该主键");
         //插入
-        ((PageLeaf)page).insert(valuesMap,heap_no,index_key);
+        ((PageLeaf)page).insert(values,heap_no,index_key);
         //需要页分裂
         while(page.checkPageSplit()){
             PageNoLeaf parent;   int prev = Page.MIN;
@@ -263,20 +406,17 @@ public class Table {
         }
     }
 
-    //插入一条新记录 默认顺序插入
-    public void insertRec(Object... objects){
-        LinkedHashMap<String,Object> valueMap = new LinkedHashMap<>();
+    //外接
+    public void insert(List<String> strings) throws RuntimeException {insertRec(checkObjects(strings));}
 
-        boolean flag = insertObjects(valueMap,objects);
-        if(!flag) throw new RuntimeException("插入失败");
+    public void insert(String... strings) throws RuntimeException{insertRec(checkObjects(Arrays.asList(strings)));}
 
-        insertRec(valueMap);
-    }
 
     /****************************检查插入记录数据***************************/
 
+    /*
     //根据字段集的属性检查每一个插入的字段行数据是否可行   默认顺序：无指定顺序  valueMap必须是空的
-    private boolean insertObjects(LinkedHashMap<String,Object> valuesMap,Object... objects){
+    private boolean checkObjects(Object... objects) throws RuntimeException {
         //Objects长度与fields不一样
         if(objects.length != fields.size())  return false;
 
@@ -292,7 +432,7 @@ public class Table {
             //该值为null 且明确不能为null
             if(object == null && !value.couldNull){valuesMap.clear(); return false;}
             //明确不能重复
-            if(!value.couldRepeated){/*TODO*/}
+            if(!value.couldRepeated){/*TODO}
 
             //没问题
             valuesMap.put(map.getKey(),object);
@@ -303,43 +443,55 @@ public class Table {
         return  true;
     }
 
-    //根据字段集的属性检查每一个插入的字段行数据是否可行  给Frame外接
-    public boolean insertRec(List<String> strings) throws RuntimeException{
-        if(strings.size() != fields.size())  return false;
-        //插入记录的LinkedHashMap
-        LinkedHashMap<String,Object> valueMap = new LinkedHashMap<>();
+
+
+     */
+
+    //根据字段集的属性检查每一个插入的字段行数据是否可行  给Frame外接  /*TODO*/
+    private Object[] checkObjects(List<String> strings) throws RuntimeException{
+        if(strings.size() != fields.size())  throw new RuntimeException("字段个数不符合");
+        //插入记录的Object
+        Object[] values = new Object[strings.size()];
 
         int index = 0;
         for (Map.Entry<String, TableColumn> map : fields.entrySet()) {
             String str = strings.get(index);
-            TableColumn value = map.getValue();
-            Object object;
-            if (value.type == Integer.class){
-                try {
-                    object = Integer.parseInt(str); // 这会抛出异常
-                } catch (NumberFormatException e) {
-                    throw new RuntimeException("记录添加失败，有不符合字段的数据");
-                }
-            }else if(value.type == String.class){
-                object = str;
-            }else if(value.type == Float.class){
-                try {
-                    object = Float.parseFloat(str); // 这会抛出异常
-                } catch (NumberFormatException e) {
-                    throw new RuntimeException("记录添加失败，有不符合字段的数据");
-                }
-            }else if(value.type == Boolean.class){
-                if(str.equalsIgnoreCase("TRUE")) object = true;
-                else if(str.equalsIgnoreCase("FALSE")) object = false;
-                else throw new RuntimeException("记录添加失败，有不符合字段的数据");
-            }else throw new RuntimeException("记录添加失败，有不符合字段的数据");
+            Object object = checkObject(map.getKey(),str);
+            values[index] = object;
             index++;
-            valueMap.put(map.getKey(),object);
         }
-        insertRec(valueMap);
+        return values;
 
-        return true;
+    }
 
+    //根据字段集属性检查单个字段的数据是否符合该字段的属性
+    public Object checkObject(String field,String str) throws RuntimeException{
+        Class<?> type = getFieldType(field);
+        Object object;
+        if (type == Integer.class){
+            try {
+                object = Integer.parseInt(str); // 这会抛出异常
+            } catch (NumberFormatException e) {
+                throw new RuntimeException(field + "为整数int,但" + str + "不是整数int"); /*TODO*/
+            }
+        }else if(type == String.class){
+            char first = str.charAt(0);
+            if(first == '\"' || first == '\'') {
+                object = str.substring(1,str.length() - 1);
+            }
+            else throw new RuntimeException(field + "为字符串String,但" + str + "不是字符串String");
+        }else if(type == Float.class){
+            try {
+                object = Float.parseFloat(str); // 这会抛出异常
+            } catch (NumberFormatException e) {
+                throw new RuntimeException(field + "为浮点型float,但" + str + "不是浮点型float");
+            }
+        }else if(type == Boolean.class){
+            if(str.equalsIgnoreCase("TRUE")) object = true;
+            else if(str.equalsIgnoreCase("FALSE")) object = false;
+            else throw new RuntimeException(field + "为布尔型boolean,但" + str + "不是布尔型boolean");
+        }else throw new RuntimeException("非法字段类型");
+        return object;
     }
 
     /****************************删除记录********************************/
@@ -545,8 +697,6 @@ public class Table {
 
     }
 
-
-
     /****************************页缓冲池*******************************/
 
     //在缓冲池中删除某一页
@@ -677,18 +827,6 @@ public class Table {
 
     /****************************逻辑操作*******************************/
 
-    //计算在当前字段集下，一个记录实际占用的字节数
-    private int[] calculateRecordLength(){
-        int[] arr = new int[fields.size() + 1];
-        int index = 0;
-        arr[index++] = 0;
-        for (Map.Entry<String, TableColumn> entry : fields.entrySet()) {
-            TableColumn tableColumn = entry.getValue();
-            arr[index] = arr[index - 1] + ByteTools.singleObjectLength(tableColumn.type,tableColumn.length);
-        }
-        return arr;
-    }
-
     //计算一个索引键值占用的字节数
     private int calculateIndexLength(){
         int primaryLength;
@@ -755,14 +893,16 @@ public class Table {
         buffer.putInt(SlotSplit);
         //写入字段数据
         buffer.position(512);
-        for (String fieldName : getFieldNames()) {
-            bytes = fieldName.getBytes(StandardCharsets.UTF_8);
+        for (Map.Entry<String, TableColumn> entry : fields.entrySet()) {
+            bytes = entry.getKey().getBytes(StandardCharsets.UTF_8);
             buffer.put((byte)bytes.length);
             buffer.put(bytes);
+            TableColumn column = entry.getValue();
             //字段属性
-            buffer.put(ByteTools.typeToByte(fields.get(fieldName).type)); //将字段类型转为相应的字节
-            buffer.put((byte) fields.get(fieldName).length);              //将字段类型长度转为单字节
-            buffer.put(fields.get(fieldName).getFieldBooleanByte());      //将字段的约束转为相应的字节
+            buffer.putShort(column.offset);                            //字段在字节数组中的位置
+            buffer.put(ByteTools.typeToByte(column.type));             //将字段类型转为相应的字节
+            buffer.put((byte) column.length);                          //将字段类型长度转为单字节
+            buffer.put(column.getFieldBooleanByte());                  //将字段的约束转为相应的字节
         }
         return buffer.array();
     }
@@ -825,18 +965,21 @@ public class Table {
             TableColumn tableColumn;
             Class<?> type;   //字段类型
             short length;      //字段类型长度
+            short offset;
             byte constraint; //字段约束
             //字段名
             bytes = new byte[str_length];
             buffer.get(bytes);
             field_name = new String(bytes,StandardCharsets.UTF_8);
+            //字段在字节数组中的位置
+            offset = buffer.getShort();
             //字段类型
             type = ByteTools.byteToType(buffer.get());
             //字段类型长度
             length =buffer.get();
             //字段约束
             constraint = buffer.get();
-            tableColumn = new TableColumn(type,length,constraint);
+            tableColumn = new TableColumn(type,length,constraint,offset);
             fields.put(field_name,tableColumn);
             //继续循环
             str_length = buffer.get();
@@ -855,16 +998,16 @@ public class Table {
     public String[] getFieldNamesArr(){
         return fields.keySet().toArray(new String[0]);
     }
-    //返回字段名字列表的迭代器
-    public Iterable<String> getFieldNames(){return this.fields.keySet();}
-    //返回字段的集合迭代器
-    public Set<Map.Entry<String,TableColumn>> getFieldEntry(){return fields.entrySet();}
+    //返回字段属性的迭代器
+    public Collection<TableColumn> getFields(){return fields.values();}
     //返回字段的数据类型
     public Class<?> getFieldType (String name){
         return fields.get(name).type;
     }
     //返回字段的数据长度
     public short getFieldLength(String name){return fields.get(name).length;}
+    //返回字段在数据数组中的位置
+    public int getFieldIndex(String name){return fields.get(name).index;}
     //返回主键名字
     public String getPrimaryKey(){return this.primaryKey;}
     //返回默认主键 并且加一
@@ -877,8 +1020,9 @@ public class Table {
     public int getRecord_maxLength(){return this.record_maxLength;}
     //返回该表的主键索引的字节长度
     public int getIndex_length(){return this.index_length;}
-    //返回该表的数据位置头
-    public int[] getValueOffset(){return valueOffset;}
+    //返回该表中已创建索引的字段集合
+    public HashSet<String> getIndexSet(){return  this.indexSet;}
+
 
 
 

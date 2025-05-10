@@ -1,8 +1,10 @@
 package UI;
+import ConditionPage.NestedCondition;
 import Memory.Table;
 
 import javax.swing.*;
 import javax.swing.Timer;
+import javax.swing.table.DefaultTableModel;
 
 import java.awt.*;
 import java.util.*;
@@ -13,7 +15,7 @@ public class MainFrame extends JFrame {
     private final Table table;
     // 模拟表数据
     private final LinkedHashMap<String, Object> tableProperties = new LinkedHashMap<>();
-    private final LinkedHashMap<String, Table.TableColumn> fields;   /*TODO*/
+    private final LinkedHashMap<String, Table.TableColumn> fields;
     private final Object[][] sampleData = {
             {1, "张三", 25, "男", "工程师"},
             {2, "李四", 30, "女", "设计师"},
@@ -135,7 +137,7 @@ public class MainFrame extends JFrame {
 
             // 检查并插入行记录
             try {
-                table.insertRec(sts);
+                table.insert(sts);
                 // 显示成功状态
                 showStatus(statusLabel, "✓ 添加成功", Color.GREEN.darker());
             } catch (RuntimeException e) {
@@ -213,21 +215,46 @@ public class MainFrame extends JFrame {
     private void createQueryPage() {
         JPanel queryPanel = new JPanel(new BorderLayout(10, 10));
 
+
+        //表格
+        JTable jTable = new JTable(new Object[0][],this.table.getFieldNamesArr());
         // 查询条件区域
+        JTextField jTextField = new JTextField(20);   //文本框
+        JButton search = new JButton("搜索");             //查询按钮
+        search.addActionListener(e -> {
+            new SwingWorker<DefaultTableModel,Void>() {
+                @Override
+                protected DefaultTableModel doInBackground() throws RuntimeException {
+                    // 模拟耗时查询（实际替换为你的数据库/网络请求代码）
+                    String text = jTextField.getText();
+                    NestedCondition condition = new NestedCondition(text, table);
+                    Object[][] o = condition.runSearch();
+                    return new DefaultTableModel(o, table.getFieldNamesArr());
+                }
+                @Override
+                protected void done() {
+                    try {
+                        DefaultTableModel model = get();
+                        jTable.setModel(model);
+                    } catch (Exception ex) {
+                        JOptionPane.showMessageDialog(queryPanel, ex.getMessage());
+                    }
+                }
+            }.execute();
+        });
+
         JPanel conditionPanel = new JPanel(new FlowLayout());
         conditionPanel.add(new JLabel("查询条件:"));
-        conditionPanel.add(new JTextField(20));
-        conditionPanel.add(new JButton("搜索"));
+        conditionPanel.add(jTextField);
+        conditionPanel.add(search);
 
-        // 结果显示区域
-        JTable table = new JTable(sampleData,this.table.getFieldNamesArr());
 
         // 按钮区域
         JPanel buttonPanel = new JPanel();
         addButton(buttonPanel, "返回首页", "HOME");
 
         queryPanel.add(conditionPanel, BorderLayout.NORTH);
-        queryPanel.add(new JScrollPane(table), BorderLayout.CENTER);
+        queryPanel.add(new JScrollPane(jTable), BorderLayout.CENTER);
         queryPanel.add(buttonPanel, BorderLayout.SOUTH);
 
         container.add(queryPanel, "QUERY");

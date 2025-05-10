@@ -1,11 +1,7 @@
 package Memory;
 
-import DataIO.BytesIO;
-
 import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.Collection;
 /*
     default_no      : 根据table中default_key给出
     indexKey_off    : 创建新Record时默认为0
@@ -15,28 +11,28 @@ import java.util.Map;
 //叶子页中的行记录
 public class Record extends IndexRecord{
     //行数据
-    public HashMap<String, Object> valuesMap = new HashMap<>();         //建立一个根据字段名字查询数据的hashmap   (核心数据)  /*TODO*/
+    public Object[] values ;         //建立一个根据字段名字查询数据的hashmap   (核心数据)  /*TODO*/
     public int heap_no;                              //  创建新Record时表给出
 
 
     //创建一条新的行记录  (普通叶子记录) 由页分配本记录的偏移量、下一条记录的地址、以及该索引记录的类型  (完整创建)
-    public Record(byte rec_type,HashMap<String,Object> valuesMap,int offset,IndexRecord next_record,Table table){
+    public Record(byte rec_type,Object[] values,int offset,IndexRecord next_record,Table table){
         super(rec_type,null,offset,next_record,table);
 
         this.heap_no = table.getDefault_key(1);
-        this.valuesMap = valuesMap;
+        this.values = values;
         //主键
         if(table.getPrimaryKey() == null) this.index_key = heap_no;
-        else{ this.index_key = valuesMap.get(table.getPrimaryKey()); }
+        else{ this.index_key = values[table.getFieldIndex(table.getPrimaryKey())]; }
     }
 
     //反序列化行记录
     public Record(byte rec_type,Object index_key,int offset,int next_record_offset,
                   byte delete_flag,byte n_owned,Table table,
-                  HashMap<String,Object> valuesMap,int heap_no){
+                  Object[] values,int heap_no){
 
         super(rec_type,index_key,offset,next_record_offset,delete_flag,n_owned,table);
-        this.valuesMap = valuesMap;
+        this.values = values;
         this.heap_no = heap_no;
     }
 
@@ -75,13 +71,14 @@ public class Record extends IndexRecord{
         }
         //序列化行数据
         byte[] values_bytes = new byte[0];
-        for (Map.Entry<String, Table.TableColumn> map : table.getFieldEntry()) {
-            String name = map.getKey();                           //字段名
-            Class<?> type = map.getValue().type;
-            short length =map.getValue().length;
-            Object obj = valuesMap.get(name);                     //字段相应的数据
+        int index = 0;
+        for (Table.TableColumn tableColumn : table.getFields()) {
+            Class<?> type = tableColumn.type;
+            short length = tableColumn.length;
+            Object obj = values[index];                     //字段相应的数据
             byte[] b2 = ByteTools.serializeSingleObject(obj, type,length);//根据字段类型、数据生成的二进制数据
             values_bytes = ByteTools.concatBytes(values_bytes, b2);             //将二进制数据都拼接起来
+            index++;
         }
 
         ByteBuffer buffer = ByteBuffer.allocate(HEAD_LENGTH + 4 + index_bytes.length + values_bytes.length + table.RecordLengthAdd);
@@ -98,14 +95,17 @@ public class Record extends IndexRecord{
     }
 
     //部分反序列化记录数据
-    public static LinkedHashMap<String, Object> deSerializeData(byte[] data, Table table) {
-        ByteBuffer buffer = ByteBuffer.wrap(data);
-        LinkedHashMap<String, Object> values = new LinkedHashMap<>();
-        for (Map.Entry<String, Table.TableColumn> map : table.getFieldEntry()) {
-            String fieldName = map.getKey();
-            byte type = buffer.get();      //字段类型
-            short length = map.getValue().length;
-            values.put(fieldName,ByteTools.deSerializeSingleObject(buffer,type,length));
+    public static Object[] deSerializeData(ByteBuffer buffer, Table table) {
+        int Head = buffer.position();             //数据字节数组的头下标
+        //获取字段数据
+        Collection<Table.TableColumn> collection = table.getFields();
+        Object[] values = new Object[collection.size()];
+        int index = 0;
+        for (Table.TableColumn tableColumn : collection) {
+            buffer.position(tableColumn.offset + Head);
+            short length = tableColumn.length;
+            values[index] = ByteTools.deSerializeSingleObject(buffer,length);
+            index ++;
         }
         return values;
     }
@@ -113,7 +113,7 @@ public class Record extends IndexRecord{
     /**********************************************************/
 
     public Object[] getNode_All(){
-        Object[] objects = new Object[6 + valuesMap.size()];
+        Object[] objects = new Object[6 + values.length];
         objects[0] = index_key;
         objects[1] = delete_flag;
         objects[2] = offset;
@@ -122,8 +122,8 @@ public class Record extends IndexRecord{
         objects[5] = next_record_offset;
 
         int index = 6;
-        for (Map.Entry<String, Object> entry : valuesMap.entrySet()) {
-            objects[index++] = entry.getValue();
+        for (Object value : values) {
+            objects[index++] = value;
         }
         return objects;
     }

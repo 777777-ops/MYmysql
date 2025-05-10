@@ -7,8 +7,9 @@ import java.util.*;
 
 //叶子页
 public class PageLeaf extends Page{
-    public int page_prev_offset;         //上页的偏移量
-    public int page_next_offset;          //下页的偏移量
+    public int page_prev_offset;                            //上页的偏移量
+    public int page_next_offset;                            //下页的偏移量
+    protected HashMap<Integer,Object[]>  valuesMap = new HashMap<>();       //该页中数据的缓冲池
 
 
     //初始化叶子页 ：由表给出数据  （完善）
@@ -39,17 +40,17 @@ public class PageLeaf extends Page{
     }
 
     //查询该记录的信息  (通过主键)
-    protected LinkedHashMap<String,Object> searchRecord(Object index_key){
-        int prt = Search(index_key);
-        prt = getNextOffset(prt);
+    protected Table.SearchResult searchValues(Object index_key){
+        int prev = Search(index_key);
+        int prt = getNextOffset(prev);
         if(prt == MAX)  return null;
-        else return getValueMap(prt);
+        else return new Table.SearchResult(this.page_offset,prev,getValues(prt));
     }
 
     /**********************************插入*********************************/
 
     //插入   (可提取的公共部分代码较少  可能是因为需要序列化)
-    protected void insert(LinkedHashMap<String,Object> valuesMap,int heap_no,Object index_key){
+    protected void insert(Object[] values,int heap_no,Object index_key){
         int offset = page_spare;   //本记录的偏移量就是空闲指针
         spareAdd();                //空闲指针增加,更新缓冲数组大小
         int next_record_offset;
@@ -71,7 +72,7 @@ public class PageLeaf extends Page{
         else  //有主键
         {
             String primaryName = table.getPrimaryKey();
-            index_key = valuesMap.get(primaryName);         //主键数据
+            index_key = values[table.getFieldIndex(primaryName)];  //获取主键
             Class<?> type = table.getFieldType(primaryName);       //主键类型
             short length = table.getFieldLength(primaryName);      //主键长度
             index_bytes = ByteTools.serializeSingleObject(index_key,type,length);
@@ -79,12 +80,12 @@ public class PageLeaf extends Page{
         objectMap.put(offset,index_key);  //顺便进入一下缓冲池
 
         //行数据序列
+        int index = 0;
         byte[] values_bytes = new byte[0];
-        for (Map.Entry<String, Table.TableColumn> map : table.getFieldEntry()) {
-            String name = map.getKey();                           //字段名
-            Class<?> type = map.getValue().type;
-            short length =map.getValue().length;
-            Object obj = valuesMap.get(name);                     //字段相应的数据
+        for (Table.TableColumn tableColumn : table.getFields()) {             //字段名
+            Class<?> type = tableColumn.type;
+            short length = tableColumn.length;
+            Object obj = values[index++];                     //字段相应的数据
             byte[] b2 = ByteTools.serializeSingleObject(obj, type,length);//根据字段类型、数据生成的二进制数据
             values_bytes = ByteTools.concatBytes(values_bytes, b2);             //将二进制数据都拼接起来
         }
@@ -101,7 +102,8 @@ public class PageLeaf extends Page{
 
     //重新规划整个page_buffer   用于重构页或者页分裂的新页   //所插入的数组是逻辑物理上连续的  //要重新分配槽
     protected void resetAllBuffer(byte[] data){
-        objectMap.clear();
+        valuesMap.clear();
+        objectMap.clear();                            //双缓冲池清空
         page_num = 0;                                 //重构页中节点数
         this.page_slots_offset = new ArrayList<>();   //重构槽的偏移量数组
         page_spare = PAGE_HEAD + data.length;         //重构空闲指针
@@ -260,27 +262,28 @@ public class PageLeaf extends Page{
 
     /******************************索引记录的数组操作**********************/
 
-    int BEGIN_OFFSET = table.getIndex_length() - INDEX_HEAD + RECORD_HEAD;
-
-    //获取记录的所有信息
-    public LinkedHashMap<String,Object> getValueMap(int offset){
-
-        //定位到要获取数据的位置
-        page_buffer.position(BEGIN_OFFSET + offset);
-        ByteBuffer buffer = page_buffer;
-        LinkedHashMap<String, Object> values = new LinkedHashMap<>();
-        for (Map.Entry<String, Table.TableColumn> map : table.getFieldEntry()) {
-            String fieldName = map.getKey();
-            byte type = buffer.get();      //字段类型
-            short length = map.getValue().length;
-            values.put(fieldName,ByteTools.deSerializeSingleObject(buffer,type,length));
-        }
-        return values;
-    }
 
     //获取记录的部分信息
     public Object[] getValues(int offset,String[] fieldNames){
-        int[] valueOffset = table.getValueOffset();
+        Object[] values = getValues(offset);
+        Object[] result = new Object[fieldNames.length];
+        for (int i = 0; i < fieldNames.length; i++) {
+            result[i] = values[table.getFieldIndex(fieldNames[i])];
+        }
+        return result;
+    }
+
+    //获取记录的全部信息
+    public Object[] getValues(int offset){
+        int BEGIN_OFFSET = table.getIndex_length() - INDEX_HEAD + RECORD_HEAD;
+        Object[] values = valuesMap.get(offset);
+        if(values == null){
+            //游标到记录数据字节的开头
+            page_buffer.position(offset + BEGIN_OFFSET);
+            values = Record.deSerializeData(page_buffer,table); //反序列数据
+            valuesMap.put(offset,values);                //保存到缓冲池中
+        }
+        return values;
     }
 
     /**************************************************************************/
@@ -304,6 +307,7 @@ public class PageLeaf extends Page{
 
     /**************************************测试点*********************************/
 
+    /*
     public static void main1(String[] args) {
         //创建一个table对象
         LinkedHashMap<String, Table.TableColumn> columnHashMap = new LinkedHashMap<>();
@@ -404,7 +408,7 @@ public class PageLeaf extends Page{
         t0.insertRec(12);
         t0.insertRec(163);
         t0.insertRec(97);
-        */
+
     }
 
     public static void main3(String[] args) {
@@ -447,8 +451,10 @@ public class PageLeaf extends Page{
 
         new MainFrame(t0);
     }
+    */
 
-    public static void main8(String[] args) {
+    public static void main(String[] args) {
+
         LinkedHashMap<String, Table.TableColumn> columnHashMap = new LinkedHashMap<>();
         columnHashMap.put("名字", new Table.TableColumn(String.class,(short) 5,false,true,false));
         columnHashMap.put("年龄", new Table.TableColumn(Integer.class,(short) 0,false,false,false));

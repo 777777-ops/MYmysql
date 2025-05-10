@@ -330,6 +330,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         spareDelete(prt);
         //缓冲区删除
         objectMap.remove(prt);
+        if(this instanceof PageLeaf pl){pl.valuesMap.remove(prt);}        //如果是叶子页还要删除值缓冲区
         //页数量减一
         page_num--;
     }
@@ -852,8 +853,9 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         else if(rec_type == (byte)0x01)page_buffer.position(offset + INDEX_HEAD);
         else throw new RuntimeException("除了0x01和0x02外，其他都不能获取索引值");
         //反序列索引值
-        byte type = page_buffer.get();
-        a = ByteTools.deSerializeSingleObject(page_buffer,type,(short)0);
+        short length = 0;
+        if(table.getPrimaryKey() != null){length = table.getFieldLength(table.getPrimaryKey());}
+        a = ByteTools.deSerializeSingleObject(page_buffer,length);
         //插入缓冲池中
         objectMap.put(offset,a);
         return a;
