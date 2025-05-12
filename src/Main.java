@@ -34,7 +34,7 @@ public class Main {
 
     }
 
-    public static void main(String[] args) {
+    public static void main8(String[] args) {
 
         Stack<String> s1 = new Stack<>();
         s1.push("a");
@@ -45,4 +45,22 @@ public class Main {
 
     }
 
+    public void function1() {
+        // 发生RuntimeException且未处理
+        throw new RuntimeException("函数1的异常");
+    }
+
+    public void function2() {
+        try {
+            function1();
+        } catch (RuntimeException e) {
+            // 这里一定会执行！
+            System.out.println("函数2捕获到异常: " + e.getMessage());
+        }
+    }
+
+    public static void main(String[] args) {
+        new Main().function2();
+    }
 }
+

@@ -31,6 +31,7 @@ public class Table {
     private int table_used;                      //表文件大小           单位B
     private int record_maxLength;                //记录字节的总占用长度（用于检测溢出）
     public /*TODO*/ HashSet<String> indexSet = new HashSet<>();            //该表中已创建的索引集合
+    public /*TODO*/ List<Object> deleteList = new ArrayList<>();          //删除日志  在表进入磁盘前要处理
     //不用写入文件中的变量
     private int index_length;                    //主键字节长度(包括索引记录头的)
     private HashMap<Page,Integer> page_cache;    //页缓冲池
@@ -162,6 +163,7 @@ public class Table {
 
     //插入字段   要找到字段字节数组中可被插入的物理位置
     public void insertColumn(String name,TableColumn column){
+        int b;
         int[] arr = new int[getFieldsLength()];
         int columnLength = ByteTools.singleObjectLength(column.type,column.length);
         //两次遍历arr  第一次标记  第二次找位置
@@ -265,7 +267,7 @@ public class Table {
         List<SearchResult> result = new ArrayList<>();         //结果
         switch (operator){
             case "==": {
-                int prt = leaf.getNextOffset(head.page_offset);
+                int prt = leaf.getNextOffset(head.node_prev);
                 if (leaf.compare(index_key, prt) == 0) result.add(head);
                 return result;
             }
@@ -527,7 +529,6 @@ public class Table {
             arr[0] = left.deleteOneSide(index_key_begin,1);
             arr[1] = right.deleteOneSide(index_key_end,2);
         }
-        deSerializeAllPage();  /*TODO*/
         //至此删除完毕,下面考虑合并操作
         while(  (left.checkPageMerge() || right.checkPageMerge()) && !stack1.isEmpty() && !stack2.isEmpty() ){
             boolean flag = right == left;
@@ -539,14 +540,56 @@ public class Table {
                 if(left.checkPageMerge()){
                     pageMergeControl(left,stack1);
                     left = deSerializePage(stack1.pop().page_offset);
-                    deSerializeAllPage();  /*TODO*/
                 }
                 if(right.checkPageMerge()){
                     pageMergeControl(right,stack2);
                     right = deSerializePage(stack2.pop().page_offset);
-                    deSerializeAllPage();
                 }
             }
+        }
+    }
+
+    //根据给出的SearchResult进行删除
+    public void delete(SearchResult sr){
+        PageLeaf leaf = (PageLeaf)deSerializePage(sr.page_offset);
+        int prt = leaf.getNextOffset(sr.node_prev);
+        int next = leaf.getNextOffset(prt);
+        leaf.slotDelete(prt);
+        leaf.setNextOffset(sr.node_prev,next);
+    }
+
+    /****************************页合并*********************************/
+
+    //所有页全部检查，看是否有可以合并的稀疏页   遍历所有页
+    public void allLeafPageMergeCheck(){
+        if(root.page_level == 0) return;          //只有一层
+        Stack<Pair> stack = new Stack<>();
+        int page_offset = root.page_offset;
+        Page page = deSerializePage(page_offset);
+        int prev = Page.MIN;   int prt = page.getNextOffset(prev);
+        while (true){
+            //如果遍历节点已经到达该页的伪最大节点   返回上一层级并且在上一层级中遍历节点要后移
+            while(prt == Page.MAX && !stack.isEmpty()){
+                Pair pair = stack.pop();
+                //上一层
+                prev = pair.page_pre_offset;  page_offset = pair.page_offset; page = deSerializePage(page_offset);
+                prt = page.getNextOffset(prev);
+                //后移
+                prev = prt; prt = page.getNextOffset(prt);
+            }
+            if(prt == Page.MAX && stack.isEmpty()) break;
+            while(page.page_level != 0){
+                //下一层
+                stack.push(new Pair(page_offset,prev));
+                page_offset = ((PageNoLeaf)page).getLeftPage(prt);
+                page = deSerializePage(page_offset); prev = Page.MIN; prt = page.getNextOffset(prev);
+            }
+            //现在的page已经是子页了
+            if(!(page instanceof PageLeaf)) throw new RuntimeException("逻辑错误");
+            //合并
+            if(page.checkPageMerge()){pageMergeControl(page,stack);}
+            //prt为MAX  为返回上一层的信号
+            prt = Page.MAX;
         }
     }
 
@@ -559,7 +602,7 @@ public class Table {
         //prev的处理          在范围删除的时候，prev极有可能失效    (后续如果该情况触发较多，需重新思考其他方法)
         if(parent.isDelete(prev)){
             prev = parent.findPrevNode(page);
-            pair.page_pre_offset = prev;        //栈中搞得prev也要更新
+            pair.page_pre_offset = prev;        //栈中的prev也要更新
         }
         int next = parent.getNextOffset(parent.getNextOffset(prev));   //page页节点的后节点
         Page neighbor = null;                                                 //page页的邻居页

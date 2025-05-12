@@ -16,11 +16,6 @@ public class MainFrame extends JFrame {
     // 模拟表数据
     private final LinkedHashMap<String, Object> tableProperties = new LinkedHashMap<>();
     private final LinkedHashMap<String, Table.TableColumn> fields;
-    private final Object[][] sampleData = {
-            {1, "张三", 25, "男", "工程师"},
-            {2, "李四", 30, "女", "设计师"},
-            {3, "王五", 28, "男", "教师"}
-    };
 
     // 页面容器
     private final CardLayout cardLayout = new CardLayout();
@@ -121,7 +116,7 @@ public class MainFrame extends JFrame {
 
         // 创建状态反馈标签
         JLabel statusLabel = new JLabel("", JLabel.RIGHT);
-        statusLabel.setPreferredSize(new Dimension(200, 20));
+        statusLabel.setPreferredSize(new Dimension(300, 20));
         statusLabel.setFont(new Font("微软雅黑", Font.PLAIN, 12));
 
         // 按钮区域
@@ -139,18 +134,18 @@ public class MainFrame extends JFrame {
             try {
                 table.insert(sts);
                 // 显示成功状态
-                showStatus(statusLabel, "✓ 添加成功", Color.GREEN.darker());
+                showStatus(statusLabel, "添加成功", Color.GREEN.darker());
             } catch (RuntimeException e) {
                 // 显示失败状态
-                showStatus(statusLabel, "✗ " + e.getMessage(), Color.RED);
+                showStatus(statusLabel, "添加失败:" + e.getMessage(), Color.RED);
             }
             clearTextFields(texts);
         });
         addButton(buttonGroup, "返回首页", "HOME");
 
         // 将按钮组放在左侧，状态标签放在右侧
-        buttonPanel.add(buttonGroup, BorderLayout.WEST);
-        buttonPanel.add(statusLabel, BorderLayout.EAST);
+        buttonPanel.add(buttonGroup, BorderLayout.EAST);
+        buttonPanel.add(statusLabel, BorderLayout.WEST);
 
         addPanel.add(new JLabel("添加新记录", JLabel.CENTER), BorderLayout.NORTH);
         addPanel.add(new JScrollPane(formPanel), BorderLayout.CENTER);
@@ -189,23 +184,58 @@ public class MainFrame extends JFrame {
     private void createDeletePage() {
         JPanel deletePanel = new JPanel(new BorderLayout(10, 10));
 
-        // 表格显示区域
-        JTable table = new JTable(sampleData,this.table.getFieldNamesArr());
+
+        // 查询条件区域
+        JTextField jTextField = new JTextField(20);   //文本框
+        JButton delete = new JButton("删除");             //查询按钮
+        delete.addActionListener(e -> new SwingWorker<Void,Void>() {
+            @Override
+            protected Void doInBackground() throws RuntimeException {
+                NestedCondition condition = new NestedCondition(jTextField.getText(), table);
+                condition.runDelete();
+                return null;
+            }
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    JOptionPane.showMessageDialog(deletePanel, "删除成功");
+                } catch (Exception ex) {
+                    JOptionPane.showMessageDialog(deletePanel, ex.getMessage());
+                }
+            }
+        }.execute());
+        JPanel conditionPanel = new JPanel(new FlowLayout());
+        conditionPanel.add(new JLabel("删除条件:"));
+        conditionPanel.add(jTextField);
+        conditionPanel.add(delete);
 
         // 按钮区域
-        JPanel buttonPanel = new JPanel();
-        addButton(buttonPanel, "删除选中", () -> {
-            int row = table.getSelectedRow();
-            if (row >= 0) {
-                JOptionPane.showMessageDialog(this, "将删除记录: " + Arrays.toString(sampleData[row]));
-            } else {
-                JOptionPane.showMessageDialog(this, "请先选择要删除的记录", "提示", JOptionPane.WARNING_MESSAGE);
+        JPanel buttonPanel = new JPanel(new GridLayout(2,3,10,10));
+        buttonPanel.add(new JLabel());
+        addButton(buttonPanel, "页合并", new SwingWorker<Void,Void>() {
+            @Override
+            protected Void doInBackground() throws RuntimeException {
+                table.allLeafPageMergeCheck();
+                return null;
+            }
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    JOptionPane.showMessageDialog(deletePanel, "已完成所有叶子页的合并检查");
+                } catch (Exception ex) {
+                    JOptionPane.showMessageDialog(deletePanel, ex.getMessage());
+                }
             }
         });
-        addButton(buttonPanel, "返回首页", "HOME");
+        buttonPanel.add(new JLabel());
+        buttonPanel.add(new JLabel());
+        addButton(buttonPanel,"返回首页","HOME");
 
-        deletePanel.add(new JLabel("删除记录 - 请选择要删除的行", JLabel.CENTER), BorderLayout.NORTH);
-        deletePanel.add(new JScrollPane(table), BorderLayout.CENTER);
+
+        deletePanel.add(new JLabel("删除记录", JLabel.CENTER), BorderLayout.NORTH);
+        deletePanel.add(conditionPanel,BorderLayout.CENTER);
         deletePanel.add(buttonPanel, BorderLayout.SOUTH);
 
         container.add(deletePanel, "DELETE");
@@ -221,27 +251,24 @@ public class MainFrame extends JFrame {
         // 查询条件区域
         JTextField jTextField = new JTextField(20);   //文本框
         JButton search = new JButton("搜索");             //查询按钮
-        search.addActionListener(e -> {
-            new SwingWorker<DefaultTableModel,Void>() {
-                @Override
-                protected DefaultTableModel doInBackground() throws RuntimeException {
-                    // 模拟耗时查询（实际替换为你的数据库/网络请求代码）
-                    String text = jTextField.getText();
-                    NestedCondition condition = new NestedCondition(text, table);
-                    Object[][] o = condition.runSearch();
-                    return new DefaultTableModel(o, table.getFieldNamesArr());
+        search.addActionListener(e -> new SwingWorker<DefaultTableModel,Void>() {
+            @Override
+            protected DefaultTableModel doInBackground() throws RuntimeException {
+                String text = jTextField.getText();
+                NestedCondition condition = new NestedCondition(text, table);
+                Object[][] o = condition.runSearch();
+                return new DefaultTableModel(o, table.getFieldNamesArr());
+            }
+            @Override
+            protected void done() {
+                try {
+                    DefaultTableModel model = get();
+                    jTable.setModel(model);
+                } catch (Exception ex) {
+                    JOptionPane.showMessageDialog(queryPanel, ex.getMessage());
                 }
-                @Override
-                protected void done() {
-                    try {
-                        DefaultTableModel model = get();
-                        jTable.setModel(model);
-                    } catch (Exception ex) {
-                        JOptionPane.showMessageDialog(queryPanel, ex.getMessage());
-                    }
-                }
-            }.execute();
-        });
+            }
+        }.execute());
 
         JPanel conditionPanel = new JPanel(new FlowLayout());
         conditionPanel.add(new JLabel("查询条件:"));
