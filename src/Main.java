@@ -3,10 +3,7 @@ import Memory.IndexRecord;
 
 import java.io.*;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Stack;
+import java.util.*;
 
 public class Main {
     public static void main2(String[] args) {
@@ -47,7 +44,7 @@ public class Main {
 
     public void function1() {
         // 发生RuntimeException且未处理
-        throw new RuntimeException("函数1的异常");
+        throw new IllegalArgumentException("函数1的异常");
     }
 
     public void function2() {
@@ -59,8 +56,17 @@ public class Main {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main9(String[] args) {
         new Main().function2();
+    }
+
+    public static void main(String[] args) {
+        Set<Integer> s = new HashSet<>();
+        s.add(8);
+        s.add(8);
+        s.add(8);
+        s.add(8);
+        s.add(8);
     }
 }
 

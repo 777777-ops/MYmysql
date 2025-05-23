@@ -1,10 +1,9 @@
 package Memory;
 
-import DataIO.BytesIO;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Stack;
 
 //非叶子页节点
 public class PageNoLeaf extends Page{
@@ -27,7 +26,7 @@ public class PageNoLeaf extends Page{
         int offset = page_spare; //插入位置为空闲指针
         spareAdd(); //空闲指针自增并且扩大缓冲数组
         page_buffer.position(offset);
-        page_buffer.put(initIndexKey(table.getIndex_length(),(byte)0x11,offset,MAX,
+        page_buffer.put(initIndexKey(table.getIndex_length(),(byte)0x11,MIN,MAX,
                 0,new byte[0]));
         //修改槽：将末尾槽头改为工具节点  而不是MAX
         setOwned(MAX,(byte)0);
@@ -36,6 +35,7 @@ public class PageNoLeaf extends Page{
 
         //前后指针改变
         setNextOffset(MIN,offset);
+        setPrevOffset(MAX,offset);
         //工具节点也算一个节点
         page_num++;
 
@@ -88,7 +88,7 @@ public class PageNoLeaf extends Page{
         int pos = PAGE_HEAD;   int node_length = getNodeLength();
         while(pos < page_used){
             setNextOffset(pos,pos + node_length);   //将节点的下一个节点指针指向物理逻辑上的下一个指针
-            setThisOffset(pos);                               //测试易观察
+            setPrevOffset(pos,pos - node_length);                               //测试易观察
             if(head_num < max_num){head_num ++; setOwned(pos,(byte)0);}    //槽头还没满
             else{                                                          //槽头已满 -> 记录槽头值  更新槽头至下一个槽头
                 setOwned(slot_head,(byte)head_num);                        //分配上一个槽头  本槽头要等下一个槽头分配
@@ -114,7 +114,9 @@ public class PageNoLeaf extends Page{
         if(getType(pos) != (byte)0x11)  throw new RuntimeException("逻辑错误");
 
         setNextOffset(MIN,PAGE_HEAD);                  //伪最小指向页头末尾
+        setPrevOffset(PAGE_HEAD,MIN);
         setNextOffset(pos,MAX);                        //将工具节点指向伪最大值
+        setPrevOffset(MAX,pos);
         setIndex_key_bytes(pos,new byte[]{0,0,0,0});
 
         //deSerializeIndexRecords();
@@ -122,8 +124,8 @@ public class PageNoLeaf extends Page{
     }
 
     //插入一个新的索引节点
-    protected void insert(int prev,byte[] index_key_bytes,int leftPage_offset,int rightPage_offset) {
-        int next = getNextOffset(prev);
+    protected void insert(int next,byte[] index_key_bytes,int leftPage_offset,int rightPage_offset) {
+        int prev = getPrevOffset(next);
         int slot_head_num = slotNumSearch(prev);       //找出槽头位置
         int slot_head = page_slots_offset.get(slot_head_num);
         setOwned(slot_head,(byte)(getOwned(slot_head)+1));  //槽头自增一
@@ -131,12 +133,13 @@ public class PageNoLeaf extends Page{
         int offset = page_spare;                   //新节点的偏移量就是空闲指针
         spareAdd();                                //空闲指针自增
         setNextOffset(prev,offset);                //前节点的后节点为本节点
+        setPrevOffset(next,offset);                //后节点的前节点为本节点
 
         setLeftPage(next,rightPage_offset);        //后节点的左页改为要插入的右页
         //插入！
         page_buffer.position(offset);
         page_buffer.put(
-                initIndexKey(table.getIndex_length(),(byte)0x01,offset,next,leftPage_offset,index_key_bytes)
+                initIndexKey(table.getIndex_length(),(byte)0x01,prev,next,leftPage_offset,index_key_bytes)
         );
         page_num ++;
         checkSlotSplit(slot_head_num);            //检查更新槽头是否需要分裂
@@ -148,12 +151,10 @@ public class PageNoLeaf extends Page{
 
 
     //范围删除,给出一个双闭区间的索引值,删除该页中在此双闭区间中的所有索引值  delete_begin和delete_end分别是(、)本身不被删除
-    protected Table.Pair[] delete(Object index_key_begin,Object index_key_end){
-        //int[] arr = new int[]{getLeftPage(delete_begin),getLeftPage(delete_end)};
-        Table.Pair[] pairs = new Table.Pair[]{new Table.Pair(0,0),new Table.Pair(0,0)};
+    protected int[] delete(Object index_key_begin,Object index_key_end){
         int prt = Search(index_key_begin);     //所要删除节点的前一个节点偏移量
         int delete_begin = getNextOffset(prt);    //获取prt的下一个偏移量   即第一个需要删除的节点
-        pairs[0].page_pre_offset = prt;  pairs[0].page_offset = getLeftPage(delete_begin);
+        if(compare(index_key_begin,delete_begin) == 0)  delete_begin = getNextOffset(delete_begin);
 
         prt  = delete_begin;
         while(compare(index_key_end,prt) >= 0) //prt遍历直到索引值不等于要删除的索引值 [)
@@ -162,65 +163,48 @@ public class PageNoLeaf extends Page{
             //非叶子页删除特有的     当删除的头尾相同
             if(prt == delete_begin) {prt = next_offset;continue;}
             //删除节点、更新空闲链表   (这也代表着一个节点的删除)
-            slotDelete(prt);         table.deletePage(getLeftPage(prt));
+            offsetDelete(prt,2);
             //遍历置下一个节点
             prt = next_offset;
         }
         //此时prt到达一个index_key>index_key_end的节点
         int delete_end = prt;
-        pairs[1].page_offset = getLeftPage(delete_end);
-        //如果删除的两节点相同直接返回arr无任何删除操作
-        if(delete_end == delete_begin){pairs[1].page_pre_offset = pairs[0].page_pre_offset;  return pairs;}
-        pairs[1].page_pre_offset = delete_begin;
-        //槽数组的更新
-        slotReset(delete_end);
-        //更新前后指针
-        setNextOffset(delete_begin,delete_end);
-        //删除后返回
-        return pairs;
+        return new int[]{getLeftPage(delete_begin),getLeftPage(delete_end)};
     }
 
     //范围删除,给出一个单区间的索引值,要求>=  或者<=该索引值的节点都要被删除
-    protected Table.Pair deleteOneSide(Object index_key,int model){
-        Table.Pair pair = new Table.Pair(0,0);
+    protected int deleteOneSide(Object index_key,int model){
         int prt = Search(index_key);    //所要删除节点的前一个节点偏移量
+        int result;
         //>=    delete_begin 是(
         if(model == 1){
             int delete_begin = getNextOffset(prt);              //获取prt的下一个偏移量
-            pair.page_offset = getLeftPage(delete_begin);  pair.page_pre_offset = prt;
+            if(compare(index_key,delete_begin) == 0)  delete_begin = getNextOffset(delete_begin);
+
+            result = getLeftPage(delete_begin);
             prt = getNextOffset(delete_begin);      //辅助指针移动到第一个删除节点  的后面
             while(getType(prt)!=0x03){
                 int next_offset = getNextOffset(prt);
                 //删除节点、更新空闲链表   (这也代表着一个节点的删除)
-                slotDelete(prt);
+                offsetDelete(prt,2);
                 prt = next_offset;           //下移
             }
             if(getType(prt)!=(byte)0x03)  throw new RuntimeException("逻辑错误");
-            //槽数组的更新
-            slotReset(prt);
-            //delete_begin成为辅助节点
-            setNextOffset(delete_begin,MAX);
-            setType(delete_begin,(byte)0x11);
-            return pair;
+            return result;
         }
         //<=    delete_end是)
         else if(model == 2){
             while(compare(index_key,prt)>=0)  prt = getNextOffset(prt);   //prt这时 > index_dex
             int delete_end = prt;
+            result = getLeftPage(delete_end);
             prt = getNextOffset(MIN);  //prt为本页的第一个节点
             while(prt != delete_end){
                 int next_offset = getNextOffset(prt);
                 //删除节点、更新空闲链表   (这也代表着一个节点的删除)
-               slotDelete(prt);      //返回节点所在的槽
+                offsetDelete(prt,2);
                 prt = next_offset;           //下移
             }
-            //槽数组的更新
-            slotReset(prt);
-            //更新左右节点
-            setNextOffset(MIN,delete_end);
-            pair.page_pre_offset = MIN;
-            pair.page_offset = getLeftPage(delete_end);
-            return pair;
+            return result;
         }
         else throw new RuntimeException("错误的model");
 
@@ -294,13 +278,42 @@ public class PageNoLeaf extends Page{
             return;
         }
         Page rightPage = table.deSerializePage(getLeftPage(next));
+
+        Stack<byte[]> stack = new Stack<>();   //栈中储存着可能利用到的索引
         //只要右页不是叶子页 就一直递推到叶子页
-        while(rightPage.page_level != (byte)0x00){
+        while(true){
+            //储存本层可能利用的索引
+            int first = rightPage.getNextOffset(MIN);
+            if(first == MAX) break;
+            if(rightPage.getType(first) != (byte)0x11) {
+                stack.push(rightPage.getIndex_key_bytes(first));
+            }
+            //如果到叶子层 不用下层
+            if(rightPage.page_level == (byte)0x00) break;
+            //到下一层
             PageNoLeaf page = (PageNoLeaf)rightPage;
-            rightPage = table.deSerializePage(page.getLeftPage(page.getNextOffset(MIN)));
+            rightPage = table.deSerializePage(page.getLeftPage(first));
         }
-        byte[] index_key_bytes = rightPage.getIndex_key_bytes(rightPage.getNextOffset(MIN));
-        this.setIndex_key_bytes(offset,index_key_bytes);
+        //为空说明该节点的右页没有一层可以利用索引
+        if(stack.isEmpty()){
+            /*
+            if(getType(next) == (byte)0x11) offsetDelete(next);
+            else {setIndex_key_bytes(offset,getIndex_key_bytes(next));offsetDelete(next);}
+
+             */
+
+            if(getType(next) == (byte)0x11)  {
+                setType(offset,(byte) 0x11);  //为了不破坏查找功能 只要键值为空的都是0x11
+                setIndex_key_bytes(offset,new byte[]{0,0,0,0});
+            }
+            else setIndex_key_bytes(offset,getIndex_key_bytes(next));
+
+        }else setIndex_key_bytes(offset,stack.pop());
+
+        /*
+            1.offset 删除掉next  会破坏掉页地址检查机制
+            2.启动重检页地址判断
+        */
     }
 
     /*********************************序列*******************************************/
@@ -331,10 +344,21 @@ public class PageNoLeaf extends Page{
         page_buffer.putInt(leftPage_offset);
     }
 
-    /************************************************************/
+    //--------------//
 
+    //字段名字
     public String[] getNodeProperties(){
-        return new String[]{"index_key","delete_flag","offset","rec_type","n_owned","next_node_offset","leftPage"};
+        return new String[]{"index_key","delete_flag","offset","rec_type","n_owned","prev_node_offset","next_node_offset","leftPage"};
+    }
+
+    //字段信息
+    protected Object[] getNodeAll(int prt){
+        Object[] result = new Object[7 + 1];
+        int i = 0;
+        for (Object object : getNodeAllBasic(prt))
+            result[i++] = object;
+        result[i] = getLeftPage(prt);
+        return result;
     }
 
     /***********************************************************/

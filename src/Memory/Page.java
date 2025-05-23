@@ -2,7 +2,6 @@ package Memory;
 
 import DataIO.BytesIO;
 
-import javax.lang.model.element.NestingKind;
 import java.nio.ByteBuffer;
 import java.util.*;
 
@@ -87,30 +86,26 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         this.page_min = page_min;
         this.page_slots_offset = page_slots_offset;
 
+        if(page_level < 0) return;
         //初始化缓冲数组
         this.page_buffer = ByteBuffer.wrap(BytesIO.readDataInto(page_used,page_offset,table.table_name));
         this.objectMap = new HashMap<>();
 
-        //初始化伪最大和伪最小
-       // initPageDe();
     }
 
     //伪最大值和伪最小值的初始化
     private void initPage(){
-        int min_offset = PAGE_HEAD - 2 * INDEX_RECORD_HEAD;
-        int max_offset = PAGE_HEAD - INDEX_RECORD_HEAD;
         //初始化
-        page_buffer.position(min_offset);
-        page_buffer.put(initFakeIndexRecord(INDEX_RECORD_HEAD,(byte)0x02,min_offset,0)); //伪最小
-        page_buffer.position(max_offset);
-        page_buffer.put(initFakeIndexRecord(INDEX_RECORD_HEAD,(byte)0x03,max_offset,0)); //伪最大
+        page_buffer.position(MIN);
+        page_buffer.put(initFakeIndexRecord(INDEX_RECORD_HEAD,(byte)0x02,0,MAX)); //伪最小
+        page_buffer.position(MAX);
+        page_buffer.put(initFakeIndexRecord(INDEX_RECORD_HEAD,(byte)0x03,MIN,0)); //伪最大
         //修改数值
-        setOwned(min_offset,(byte)(getOwned(min_offset) + 1));
-        setOwned(max_offset,(byte)(getOwned(max_offset) + 1));
-        setNextOffset(min_offset,max_offset);
+        setOwned(MIN,(byte)1);
+        setOwned(MAX,(byte)1);
         //插入槽数组中
-        page_slots_offset.add(min_offset);
-        page_slots_offset.add(max_offset);
+        page_slots_offset.add(MIN);
+        page_slots_offset.add(MAX);
     }
 
     /*
@@ -165,64 +160,20 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         return lineSearch(index_key,slot_head);
     }
 
+    /************************槽操作******************************/
+
     //通过索引偏移量查找槽头
     protected int slotNumSearch(int offset){
         if(offset == MIN){return 0;}
-        else if(offset == MAX){return this.page_slots_offset.size()-1;}
-        else{Object index_key = getIndex_key(offset); return slotsSearch(index_key);}
-    }
-
-
-    /*
-    //返回下一个索引记录,用于完善程序逻辑中可能存在的（有偏移量却无对象，或有对象却无偏移量的情况）
-    private IndexRecord nextIndexRecord(IndexRecord indexRecord){
-
-        //无对象时  检查next_record_offset
-        if(indexRecord.next_record == null){
-            if(indexRecord.next_record_offset != 0){
-                indexRecord.next_record = deSerializeSingle(indexRecord.next_record_offset - page_offset);
-            }else    //啥都没有
-                return null;
+        else if(offset == MAX || getType(offset) == (byte)0x11){return this.page_slots_offset.size()-1;}
+        else{
+            Object index_key = getIndex_key(offset);
+            int head_num = slotsSearch(index_key);
+            //有可能offset是槽头
+            if(page_slots_offset.get(head_num + 1) == offset) head_num++;
+            return  head_num;
         }
-        //有对象时  重写next_record_offset
-        else
-            indexRecord.next_record_offset = indexRecord.next_record.offset;
-
-        return indexRecord.next_record;
     }
-
-     */
-
-    /*******************************插入*************************/
-
-    //插入一个新的节点   在prev后面插入一整个节点字节数组    //用于页合并
-    protected void insert(int prev,int slot_head_num,int offset,byte[] indexKey_bytes){
-
-        page_buffer.position(offset);
-        page_buffer.put(indexKey_bytes);
-        //如果插入的是工具节点，不作槽操作
-        if(getType(offset) != (byte)0x11)
-        {
-            setOwned(offset,(byte)0x00);
-            addOwned(slot_head_num);
-        }
-        //前后指针改变
-        setNextOffset(offset,getNextOffset(prev));
-        setNextOffset(prev,offset);
-
-    }
-
-    //重新规划整个page_buffer   用于重构页或者页分裂的新页
-    protected abstract void resetAllBuffer(byte[] data);
-
-    /*
-        请明确槽数量的作用！ 不必实时更新owned!
-        槽内节点数量的作用仅仅是判断一个槽是否应该分裂的标准
-        所以可以owned数大于实际数
-        而不可以owned数小于实际数  否则分裂就会出现问题
-        明确了这点，要求了在插入节点时必须严谨地更新owned
-        而删除节点时，可以软删除owned
-    */
 
     //检查槽内数量是否达到分裂阈值     false代表未分裂  true代表已分裂
     protected boolean checkSlotSplit(int slot_head_num){
@@ -260,6 +211,40 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         setOwned(slot_head,(byte)num);
     }
 
+    /*******************************插入*************************/
+
+    //插入一个新的节点   在prev后面插入一整个节点字节数组    //用于页合并
+    protected void insert(int prev,int slot_head_num,int offset,byte[] indexKey_bytes){
+
+        page_buffer.position(offset);
+        page_buffer.put(indexKey_bytes);
+        //如果插入的是工具节点，不作槽操作
+        if(getType(offset) != (byte)0x11)
+        {
+            setOwned(offset,(byte)0x00);
+            addOwned(slot_head_num);
+        }
+        //前后指针改变
+        int next = getNextOffset(prev);
+        setNextOffset(offset,next);
+        setPrevOffset(next,offset);
+        setNextOffset(prev,offset);
+        setPrevOffset(offset,prev);
+
+    }
+
+    //重新规划整个page_buffer   用于重构页或者页分裂的新页
+    protected abstract void resetAllBuffer(byte[] data);
+
+    /*
+        请明确槽数量的作用！ 不必实时更新owned!
+        槽内节点数量的作用仅仅是判断一个槽是否应该分裂的标准
+        所以可以owned数大于实际数
+        而不可以owned数小于实际数  否则分裂就会出现问题
+        明确了这点，要求了在插入节点时必须严谨地更新owned
+        而删除节点时，可以软删除owned
+    */
+
     //空闲指针自增
     protected void spareAdd(){
         int add = getNodeLength();
@@ -292,37 +277,70 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     */
     /******************************删除***********************************/
 
-    //根据主键锁定到删除的位置
-    protected void delete(Object index_key){
-        delete(index_key,index_key);
-    }
-
     //根据位置删除
-    protected void offsetDelete(int prev){
-        int offset = getNextOffset(prev);
-        if(offset == MAX) throw new RuntimeException("逻辑错误");
+    protected void offsetDelete(int offset,int model){
+
+        // model=2为硬删除  model=1为软删除  软删除只删除根
+        if(offset == MAX || offset == MIN) throw new RuntimeException("逻辑错误");
         int next = getNextOffset(offset);
-        //删除
-        slotDelete(offset);
-        setNextOffset(prev,next);
-        //如果删到工具节点
-        if(getType(offset) == (byte)0x11 && prev != Page.MIN){
+        int prev = getPrevOffset(offset);
+        //删除到槽头的情况
+        if(getOwned(offset) > 0 && getType(offset) != (byte)0x11 ){
+            int slot_head_num = slotNumSearch(offset);                   //原槽位
+            int prev_head = page_slots_offset.get(slot_head_num - 1);    //前一个槽头
+            setOwned(prev_head,(byte)(getOwned(prev_head) + getOwned(offset)));  //两槽头合并
+            page_slots_offset.remove(slot_head_num);                     //原槽位删除
+            //节点删除
+            nodeDelete(offset);
+            setNextOffset(prev,next);
+            setPrevOffset(next,prev);
+
+            checkSlotSplit(slot_head_num - 1);              //前槽头检查分裂
+        }
+        //删到工具节点的情况
+        else if(getType(offset) == (byte)0x11 && prev != Page.MIN){
+            //普通删除
+            nodeDelete(offset);
+            setNextOffset(prev,next);
+            setPrevOffset(next,prev);
+            //让前一个节点成为新工具节点
             if(getOwned(prev) == 0) page_slots_offset.set(page_slots_offset.size() - 1,prev);
             else {page_slots_offset.remove(page_slots_offset.size() - 1);}
             setOwned(prev,(byte)2);
             setType(prev,(byte)0x11);
             setIndex_key_bytes(prev,new byte[]{0,0,0,0});
+
+        }
+        else{
+            //普通删除
+            nodeDelete(offset);
+            setNextOffset(prev,next);
+            setPrevOffset(next,prev);
+        }
+
+
+        //叶子节点的前后改变
+        if(this instanceof PageNoLeaf p){
+            int son = p.getLeftPage(offset);
+            if(model == 2) {
+                //硬删除
+                table.clearRootPage(son);
+            }else {
+                //软删除
+                table.adjustLeafPage(son);
+                table.deletePageInSpace(table.deSerializePage(son));
+            }
         }
     }
 
     //范围删除,给出一个双闭区间的索引值,删除该页中在此双闭区间中的所有索引值
-    protected abstract Table.Pair[] delete(Object index_key_begin,Object index_key_end);
+    protected abstract int[] delete(Object index_key_begin,Object index_key_end);
 
     //范围删除,给出一个单区间的索引值,要求>=  或者<=该索引值的节点都要被删除
-    protected abstract Table.Pair deleteOneSide(Object index_key, int model);
+    protected abstract int deleteOneSide(Object index_key, int model);
 
     //逻辑删除 ：删除节点、更新空闲链表、页中节点数减一
-    protected void slotDelete(int prt){
+    protected void nodeDelete(int prt){
         //节点软删除
         page_buffer.position(prt);
         page_buffer.put((byte)0x01); //打上删除标志
@@ -335,35 +353,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         page_num--;
     }
 
-    //范围删除的辅助方法   槽数组的更新  传入删除的)
-    protected void slotReset(int delete_end){
-        //重整page_slots   有些槽头可能已经被删除
-        int i = 0;
-        //找到最后一个被删槽的下标
-        int last_delete = -1;
-        while(i<page_slots_offset.size()){
-            if(isDelete(page_slots_offset.get(i)))
-                last_delete = i;
-            i++;
-        }
-        //没有槽头被删除
-        if(last_delete == -1)  return;
-        //如果delete_end本身不是槽头  就将delete_end作为新槽头插入进last_delete
-        if(getOwned(delete_end) == 0){
-            page_slots_offset.set(last_delete,delete_end);
-            reCalculateSlotHeadOwned(last_delete);   //重新计算该槽现有的节点数
-        }
-        //删除已被确定删除的槽头
-        i = 0;
-        while(i<page_slots_offset.size()){
-            if(isDelete(page_slots_offset.get(i)))
-                page_slots_offset.remove(i);
-            else i++;
-        }
-
-    }
-
-    //范围删除的辅助方法   删除操作时的空闲指针   新指针插入在空闲指针后面的第一个指针
+    //删除操作时的空闲指针   新指针插入在空闲指针后面的第一个指针
     protected void spareDelete(int offset){
         if(page_used == page_spare)  //空闲指针与page_used重叠
         {
@@ -430,7 +420,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //分裂
-    protected void PageSplit(PageNoLeaf parent,int prev){
+    protected void PageSplit(PageNoLeaf parent,int offset){
 
         //对半分裂
         int n = page_num/2;
@@ -445,7 +435,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         //创建一个新的页
         Page rightPage = table.insertPage(this.page_level);
         //向父页中插入新节点
-        parent.insert(prev,getIndex_key_bytes(prt),this.page_offset,rightPage.page_offset);
+        parent.insert(offset,getIndex_key_bytes(prt),this.page_offset,rightPage.page_offset);
         //检查本页是否为非叶子页
         if(this instanceof PageNoLeaf){
             setType(prt,(byte)0x11);    //将中间节点转化为辅助节点插入本页新更新的缓冲数组中
@@ -606,7 +596,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
             indexRecord.table = null;   /*TODO*/
             //if(indexRecord instanceof Record) ((Record)indexRecord).valuesMap = new HashMap<>();
             //开始反序列
-            indexRecord.next_record = deSerializeSingle(indexRecord.next_record_offset);
+            indexRecord.next_record = deSerializeSingle(indexRecord.next_offset);
             indexRecord = indexRecord.next_record;
         }
     }
@@ -655,7 +645,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
 
     //索引记录头中相同的数据偏移量
     public static final int NEXT_OFFSET = 1;
-    public static final int THIS_OFFSET = 5;
+    public static final int PREV_OFFSET = 5;
     public static final int REC_TYPE    = 9;
     public static final int OWNED       = 10;
 
@@ -663,14 +653,14 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
 
     //offset是相对页的偏移量
     //表头序列     由页分配本记录的长度、偏移量、下一条记录的地址、以及该索引记录的类型
-    public void help_indexRecord(ByteBuffer buffer,byte rec_type,int offset,int next_record_offset){
+    public void help_indexRecord(ByteBuffer buffer,byte rec_type,int prev_offset,int next_offset){
         buffer.position(0);   //从头开始写
         //删除标志为0
         buffer.put((byte)0x00);
         //写入下一条记录的相对偏移量
-        buffer.putInt(next_record_offset);
-        //写入本记录的相对偏移量
-        buffer.putInt(offset);
+        buffer.putInt(next_offset);
+        //写入上一条的相对偏移量
+        buffer.putInt(prev_offset);
         //记录类型
         buffer.put(rec_type);
         //槽的数量  默认为0
@@ -679,11 +669,11 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //行记录
-    public byte[] initRecord(int length,byte rec_type,int offset,int next_record_offset,int heap_no,
+    public byte[] initRecord(int length,byte rec_type,int prev_offset,int next_offset,int heap_no,
                                     byte[] index_key,byte[] values) {
         ByteBuffer buffer = ByteBuffer.allocate(length);
         //相同表头写入
-        help_indexRecord(buffer,rec_type,offset,next_record_offset);
+        help_indexRecord(buffer,rec_type,prev_offset,next_offset);
         //记录独特标识
         buffer.putInt(heap_no);
         //索引值
@@ -695,11 +685,11 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //索引
-    public byte[] initIndexKey(int length,byte rec_type,int offset,int next_record_offset,
+    public byte[] initIndexKey(int length,byte rec_type,int prev_offset,int next_offset,
                                       int leftPage_offset, byte[] index_key){
         ByteBuffer buffer = ByteBuffer.allocate(length);
         //相同表头写入
-        help_indexRecord(buffer,rec_type,offset,next_record_offset);
+        help_indexRecord(buffer,rec_type,prev_offset,next_offset);
         //左页偏移量
         buffer.putInt(leftPage_offset);
         //索引值
@@ -709,10 +699,10 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //伪最大最小   length一定就是记录头  11
-    public byte[] initFakeIndexRecord(int length,byte rec_type,int offset,int next_record_offset){
+    public byte[] initFakeIndexRecord(int length,byte rec_type,int prev_offset,int next_offset){
         ByteBuffer buffer = ByteBuffer.allocate(length);
         //直接就是这个
-        help_indexRecord(buffer,rec_type,offset,next_record_offset);
+        help_indexRecord(buffer,rec_type,prev_offset,next_offset);
         return buffer.array();
     }
 
@@ -759,11 +749,18 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         return page_buffer.getInt();
     }
 
-    //修改本节点的偏移量   /*TODO*/
-    protected void setThisOffset(int offset){
+    //修改本节点的偏移量
+    protected void setPrevOffset(int offset,int prev_offset){
         //游标到要修改数据的下方
-        page_buffer.position(offset + THIS_OFFSET);
-        page_buffer.putInt(offset);
+        page_buffer.position(offset + PREV_OFFSET);
+        page_buffer.putInt(prev_offset);
+    }
+
+    //获取上一条记录的数据
+    protected int getPrevOffset(int offset){
+        //游标到要获取数据的下方
+        page_buffer.position(offset + PREV_OFFSET);
+        return page_buffer.getInt();
     }
 
     //--------------------------//
@@ -877,6 +874,8 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
 
     //修改索引值字节数组
     protected void setIndex_key_bytes(int offset,byte[] bytes){
+        //缓冲池删除
+        objectMap.remove(offset);
         //获取类型
         byte rec_type = getType(offset);
         //移动到索引位置
@@ -885,6 +884,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         else throw new RuntimeException("除了0x00和0x01和0x11外，其他都不能修改索引值");
         //将索引值数组放入
         page_buffer.put(bytes);
+
     }
 
     //--------------------------//
@@ -923,14 +923,47 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         map.put("page_num",page_num);
         map.put("page_spare",page_spare);
         map.put("page_used",page_used);
+        for (int i = 0; i < page_slots_offset.size(); i++) {
+            map.put("slot" + i,page_slots_offset.get(i));
+        }
         if(this instanceof PageLeaf){
             map.put("page_prev_offset",((PageLeaf)this).page_prev_offset);
             map.put("page_next_offset",((PageLeaf)this).page_next_offset);
         }
         return map;
     }
+
     //返回本页的节点的所有字段
     public abstract String[] getNodeProperties();
+
+    //(0)返回本页的节点的所有字段的基础信息
+    protected Object[] getNodeAllBasic(int prt){
+        Object[] objects = new Object[7];
+        if(getType(prt) == (byte)0x11) objects[0] = null;
+        else objects[0] = getIndex_key(prt);
+        objects[1] = 0;
+        objects[2] = prt;
+        objects[3] = getType(prt);
+        objects[4] = getOwned(prt);
+        objects[5] = getPrevOffset(prt);
+        objects[6] = getNextOffset(prt);
+        return  objects;
+    }
+
+    //(1)返回本页的节点的所有字段的信息
+    protected abstract Object[] getNodeAll(int prt);
+
+    //(2)返回所有节点的信息
+    public Object[][] getAllNodeData(){
+        Object[][] result = new Object[page_num][];
+        int prt = getNextOffset(MIN);
+        int i = 0;
+        while(i<page_num){
+            result[i++] = getNodeAll(prt);
+            prt = getNextOffset(prt);
+        }
+        return result;
+    }
 
 
 }

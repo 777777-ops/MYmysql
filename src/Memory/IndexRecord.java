@@ -9,8 +9,8 @@ public abstract class IndexRecord implements Comparable<IndexRecord>{
     /*
     行头：
         删除标志         (1字节)
-        下一条记录偏移量  (4字节)
-        本条记录的偏移量  (4字节)   (无用留空)
+        下一条记录的偏移量  (4字节)
+        上一条记录的偏移量  (4字节)
         记录类型         (1字节)
         槽中所拥有的数量  (1字节)
         索引值           (?)
@@ -48,7 +48,8 @@ public abstract class IndexRecord implements Comparable<IndexRecord>{
     protected int offset;          //本记录的相对偏移量偏移量
     protected byte rec_type;          //记录类型    0x00为叶子记录 0x01是非叶子 02伪最小  03伪最大
     protected byte n_owned;        //该槽数所拥有的索引记录数量
-    protected int next_record_offset; //下一条记录的偏移量
+    protected int prev_offset;
+    protected int next_offset; //下一条记录的偏移量
     protected IndexRecord next_record;//下一条记录
     protected Object index_key;       //索引值
 
@@ -72,8 +73,8 @@ public abstract class IndexRecord implements Comparable<IndexRecord>{
         this(rec_type,index_key,table);
         this.offset = offset;
         this.next_record = next_record;
-        if(next_record == null) next_record_offset = 0;
-        else  {next_record_offset = next_record.offset;}
+        if(next_record == null) next_offset = 0;
+        else  {next_offset = next_record.offset;}
     }
 
     //初始化, 全变量用于反序列化 (不会反序列出next_record对象)
@@ -83,7 +84,7 @@ public abstract class IndexRecord implements Comparable<IndexRecord>{
         this.offset = offset;
         this.rec_type = rec_type;
         this.n_owned = n_owned;
-        this.next_record_offset = next_record_offset;
+        this.next_offset = next_record_offset;
         this.index_key = index_key;
         this.table = table;
     }
@@ -99,9 +100,9 @@ public abstract class IndexRecord implements Comparable<IndexRecord>{
         //删除标志
         buffer.put(delete_flag);
         //下一条记录的偏移量
-        if(next_record == null)  next_record_offset = 0;
-        else next_record_offset = next_record.offset;
-        buffer.putInt(next_record_offset);
+        if(next_record == null)  next_offset = 0;
+        else next_offset = next_record.offset;
+        buffer.putInt(next_offset);
         //本条记录的偏移量
         buffer.putInt(offset);
         //记录类型
@@ -123,7 +124,7 @@ public abstract class IndexRecord implements Comparable<IndexRecord>{
         delete_flag = buffer.get();
         //下一条记录的偏移量  下一条记录对象默认null
         next_record_offset = buffer.getInt();
-        //本记录的偏移量
+        //上一条记录的偏移量
         offset = buffer.getInt();
         //记录类型
         rec_type = buffer.get();

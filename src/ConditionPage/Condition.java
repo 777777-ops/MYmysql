@@ -1,7 +1,12 @@
 package ConditionPage;
 
+import Memory.IndexRecord;
 import Memory.Table;
+import UI.RootFrame;
 
+import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableColumn;
 import java.util.List;
 
 
@@ -22,4 +27,3 @@ public abstract class Condition {
     //给出一个数据数组，要求根据当前的条件返回数据是否符合条件
     protected abstract boolean isEligible(Object[] values);
 }
-

@@ -9,7 +9,7 @@ public class BytesIO {
     public static String tableFile(String table_name) {
         StringBuilder fileway = new StringBuilder(table_name);
         fileway.append(".dat");
-        fileway.insert(0,"data\\\\");
+        fileway.insert(0,"table\\\\");
         return fileway.toString();
     }
 

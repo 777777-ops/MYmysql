@@ -89,7 +89,7 @@ public class IndexKey extends IndexRecord{
     /*****************************************/
     //返回所有数据
     public Object[] getNode_All(){
-        return new Object[]{index_key,delete_flag,offset,rec_type,n_owned,next_record_offset,leftPage_offset};
+        return new Object[]{index_key,delete_flag,offset,rec_type,n_owned,leftPage_offset};
     }
 
 }

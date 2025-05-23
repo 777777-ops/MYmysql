@@ -1,6 +1,6 @@
 package Memory;
 
-import UI.MainFrame;
+import UI.TableFrame;
 
 import java.nio.ByteBuffer;
 import java.util.*;
@@ -44,25 +44,26 @@ public class PageLeaf extends Page{
         int prev = Search(index_key);
         int prt = getNextOffset(prev);
         if(prt == MAX)  return null;
-        else return new Table.SearchResult(this.page_offset,prev,getValues(prt));
+        else return new Table.SearchResult(this.page_offset,prt,getValues(prt));
     }
 
     /**********************************插入*********************************/
 
-    //插入   (可提取的公共部分代码较少  可能是因为需要序列化)
+    //插入
     protected void insert(Object[] values,int heap_no,Object index_key){
         int offset = page_spare;   //本记录的偏移量就是空闲指针
         spareAdd();                //空闲指针增加,更新缓冲数组大小
-        int next_record_offset;
+        int next; int prev;
         //-----逻辑插入----//
 
         int slot_head_num = slotsSearch(index_key);       //二分找出槽头
         int slot_head = page_slots_offset.get(slot_head_num);
         setOwned(slot_head,(byte)(getOwned(slot_head)+1));  //槽头自增一
 
-        int prt = lineSearch(index_key,slot_head);    //所要插入的节点的相对偏移量
-        next_record_offset = getNextOffset(prt);  //本节点继承prt的下一个节点偏移量
-        setNextOffset(prt,offset);                //prt的下一个节点偏移量就是本节点
+        prev = lineSearch(index_key,slot_head);    //所要插入的节点的前节点
+        next = getNextOffset(prev);                 //本节点继承prt的下一个节点偏移量
+        setNextOffset(prev,offset);                //prt的下一个节点偏移量就是本节点
+        setPrevOffset(next,offset);
         page_num++;
 
 
@@ -82,7 +83,7 @@ public class PageLeaf extends Page{
         //行数据序列
         int index = 0;
         byte[] values_bytes = new byte[0];
-        for (Table.TableColumn tableColumn : table.getFields()) {             //字段名
+        for (Table.TableColumn tableColumn : table.getFieldsProperty()) {             //字段名
             Class<?> type = tableColumn.type;
             short length = tableColumn.length;
             Object obj = values[index++];                     //字段相应的数据
@@ -93,7 +94,7 @@ public class PageLeaf extends Page{
         //插入！
         page_buffer.position(offset);
         page_buffer.put(
-                initRecord(table.getRecord_maxLength(),(byte)0x00,offset,next_record_offset,heap_no,
+                initRecord(table.getRecord_maxLength(),(byte)0x00,prev,next,heap_no,
                         index_bytes,values_bytes)
         );
 
@@ -123,7 +124,7 @@ public class PageLeaf extends Page{
         int pos = PAGE_HEAD;   int node_length = getNodeLength();
         while(pos < page_used){
             setNextOffset(pos,pos + node_length);   //将节点的下一个节点指针指向物理逻辑上的下一个指针
-            setThisOffset(pos);                               //测试易观察
+            setPrevOffset(pos,pos - node_length);                               //测试易观察
             if(head_num < max_num){head_num ++; setOwned(pos,(byte)0);}    //槽头还没满
             else{                                                          //槽头已满 -> 记录槽头值  更新槽头至下一个槽头
                 setOwned(slot_head,(byte)head_num);                        //分配上一个槽头  本槽头要等下一个槽头分配
@@ -136,8 +137,11 @@ public class PageLeaf extends Page{
         setOwned(slot_head,(byte)head_num);                                //分配最后一个槽头
         page_slots_offset.add(MAX);                    //槽头数组新增一个伪最大
 
-        pos -= node_length; setNextOffset(pos,MAX);    //将最后一个节点指向伪最大值
+        pos -= node_length;
+        setNextOffset(pos,MAX);                        //将最后一个节点指向伪最大值
+        setPrevOffset(MAX,pos);
         setNextOffset(MIN,PAGE_HEAD);                  //伪最小指向页头末尾
+        setPrevOffset(PAGE_HEAD,MIN);
     }
 
     /**********************************合并**********************************/
@@ -187,7 +191,7 @@ public class PageLeaf extends Page{
     */
 
     //范围删除,给出一个双闭区间的索引值,删除该页中在此双闭区间中的所有索引值
-    protected Table.Pair[] delete(Object index_key_begin,Object index_key_end){
+    protected int[] delete(Object index_key_begin,Object index_key_end){
 
         int delete_begin = Search(index_key_begin);    //所要删除节点的前一个节点偏移量
         int prt = getNextOffset(delete_begin);    //获取prt的下一个偏移量   即第一个需要删除的节点
@@ -196,21 +200,16 @@ public class PageLeaf extends Page{
             //保存下一条记录的指针   因为空闲指针可能会改变原先的下一条指针
             int next_offset = getNextOffset(prt);
             //删除节点、更新空闲链表   (这也代表着一个节点的删除)
-            slotDelete(prt);
+            offsetDelete(prt,2);
             //遍历置下一个节点
             prt = next_offset;
         }
         if(prt == delete_begin) {throw new RuntimeException("无法找到删除节点的索引值");}   /*TODO*///异常不抛出
-        //槽数组的更新
-        int delete_end = prt;
-        slotReset(delete_end);
-        //更新前后指针
-        setNextOffset(delete_begin,delete_end);
-        return new Table.Pair[0];
+        return new int[0];
     }
 
     //范围删除,给出一个单区间的索引值,要求>=  或者<=该索引值的节点都要被删除
-    protected Table.Pair deleteOneSide(Object index_key,int model){
+    protected int deleteOneSide(Object index_key,int model){
         int prt = Search(index_key);    //所要删除节点的前一个节点偏移量
         //>=    delete_begin 是(
         if(model == 1) {
@@ -219,14 +218,11 @@ public class PageLeaf extends Page{
             while(getType(prt)!=0x03){
                 int next_offset = getNextOffset(prt);
                 //删除节点、更新空闲链表   (这也代表着一个节点的删除)
-                slotDelete(prt);
+                offsetDelete(prt,2);
                 prt = next_offset;           //下移
             }
             if(getType(prt)!=(byte)0x03)  throw new RuntimeException("逻辑错误");
-            //槽数组的更新
-            slotReset(prt);
-            setNextOffset(delete_begin,MAX);
-            return null;
+            return 0;
         }
         //<=    delete_end是)
         else if(model == 2){
@@ -236,14 +232,10 @@ public class PageLeaf extends Page{
             while(prt != delete_end){
                 int next_offset = getNextOffset(prt);
                 //删除节点、更新空闲链表
-                slotDelete(prt);
+                offsetDelete(prt,2);
                 prt = next_offset;           //下移
             }
-            //槽数组的更新
-            slotReset(prt);  //prt此刻应等于delete_end
-            //更新左右节点
-            setNextOffset(MIN,delete_end);
-            return null;
+            return 0;
         }
         else throw new RuntimeException("错误的model");
     }
@@ -262,17 +254,6 @@ public class PageLeaf extends Page{
 
     /******************************索引记录的数组操作**********************/
 
-
-    //获取记录的部分信息
-    public Object[] getValues(int offset,String[] fieldNames){
-        Object[] values = getValues(offset);
-        Object[] result = new Object[fieldNames.length];
-        for (int i = 0; i < fieldNames.length; i++) {
-            result[i] = values[table.getFieldIndex(fieldNames[i])];
-        }
-        return result;
-    }
-
     //获取记录的全部信息
     public Object[] getValues(int offset){
         int BEGIN_OFFSET = table.getIndex_length() - INDEX_HEAD + RECORD_HEAD;
@@ -286,23 +267,45 @@ public class PageLeaf extends Page{
         return values;
     }
 
-    /**************************************************************************/
+    /****************************************记录的字节数组操作*********************************/
+
+    public static final int HEAP_NO = 11;
+
+    //获取heap_no
+    public int getHeapNo(int prt){
+        page_buffer.position(prt + HEAP_NO);
+        return page_buffer.getInt();
+    }
 
     //节点的属性
     public String[] getNodeProperties(){
         String[] fieldNames = table.getFieldNamesArr();
-        String[] strings = new String[6 + fieldNames.length];
+        String[] strings = new String[8 + fieldNames.length];
         strings[0] = "index_key";
         strings[1] = "delete_flag";
         strings[2] = "offset";
         strings[3] = "rec_type";
         strings[4] = "n_owned";
-        strings[5] = "next_node_offset";
-        int index = 6;
+        strings[5] = "prev_node_offset";
+        strings[6] = "next_node_offset";
+        strings[7] = "heap_no";
+        int index = 8;
         for (String fieldName : fieldNames) {
             strings[index++] = fieldName;
         }
         return strings;
+    }
+
+    //所有信息
+    protected Object[] getNodeAll(int prt){
+        Object[] result = new Object[7 + 1 + table.getFieldNamesArr().length];
+        int i = 0;
+        for (Object object : getNodeAllBasic(prt))
+            result[i++] = object;
+        result[i++] = getHeapNo(prt);
+        for (Object value : getValues(prt))
+            result[i++] = value;
+        return result;
     }
 
     /**************************************测试点*********************************/
@@ -376,7 +379,7 @@ public class PageLeaf extends Page{
         Table t0 = new Table("t0",columnHashMap,"年龄");
         columnHashMap = null;
 
-        new MainFrame(t0);
+        new TableFrame(t0);
         /*
         t0.insertRec(42);
         t0.insertRec(178);
@@ -449,7 +452,7 @@ public class PageLeaf extends Page{
         t0.insertRec("团队");
         t0.insertRec("技术");
 
-        new MainFrame(t0);
+        new TableFrame(t0);
     }
     */
 
@@ -461,6 +464,6 @@ public class PageLeaf extends Page{
         columnHashMap.put("工资", new Table.TableColumn(Float.class,(short) 0,false,false,false));
         Table t0 = new Table("t0",columnHashMap,"名字");
 
-        new MainFrame(t0);
+        new TableFrame(t0);
     }
 }

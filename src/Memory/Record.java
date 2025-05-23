@@ -30,7 +30,6 @@ public class Record extends IndexRecord{
     public Record(byte rec_type,Object index_key,int offset,int next_record_offset,
                   byte delete_flag,byte n_owned,Table table,
                   Object[] values,int heap_no){
-
         super(rec_type,index_key,offset,next_record_offset,delete_flag,n_owned,table);
         this.values = values;
         this.heap_no = heap_no;
@@ -72,7 +71,7 @@ public class Record extends IndexRecord{
         //序列化行数据
         byte[] values_bytes = new byte[0];
         int index = 0;
-        for (Table.TableColumn tableColumn : table.getFields()) {
+        for (Table.TableColumn tableColumn : table.getFieldsProperty()) {
             Class<?> type = tableColumn.type;
             short length = tableColumn.length;
             Object obj = values[index];                     //字段相应的数据
@@ -98,7 +97,7 @@ public class Record extends IndexRecord{
     public static Object[] deSerializeData(ByteBuffer buffer, Table table) {
         int Head = buffer.position();             //数据字节数组的头下标
         //获取字段数据
-        Collection<Table.TableColumn> collection = table.getFields();
+        Collection<Table.TableColumn> collection = table.getFieldsProperty();
         Object[] values = new Object[collection.size()];
         int index = 0;
         for (Table.TableColumn tableColumn : collection) {
@@ -119,7 +118,6 @@ public class Record extends IndexRecord{
         objects[2] = offset;
         objects[3] = rec_type;
         objects[4] = n_owned;
-        objects[5] = next_record_offset;
 
         int index = 6;
         for (Object value : values) {
