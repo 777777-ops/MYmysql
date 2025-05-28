@@ -8,11 +8,13 @@ import java.awt.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 
 public class MainFrame extends JFrame{
 
     static final int KB = 1024;
+    static final HashMap<String,TableFrame> map = new HashMap<>();
 
     public MainFrame(){
         setTitle("主界面");
@@ -61,9 +63,12 @@ public class MainFrame extends JFrame{
     }
 
     //启动表格系统
-    private void openTable(String table_name){
-        byte[] data = BytesIO.readDataInto(2*KB,0,table_name);
-        new TableFrame(Table.deSerializeTable(data));
+    private void openTable(String table_name) {
+        byte[] data = BytesIO.readDataInto(2 * KB, 0, table_name);
+        if (map.containsKey(table_name))
+            map.get(table_name).setVisible(true);
+        else
+            map.put(table_name, new TableFrame(Table.deSerializeTable(data)));
     }
 
 

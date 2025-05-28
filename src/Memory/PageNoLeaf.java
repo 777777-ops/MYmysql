@@ -67,7 +67,7 @@ public class PageNoLeaf extends Page{
     /***************************插入*****************************************/
 
     //重新规划整个page_buffer   用于重构页或者页分裂的新页
-    protected void resetAllBuffer(byte[] data){
+    public void resetAllBuffer(byte[] data){
         objectMap.clear();
         page_num = 0;                                 //重构页中节点数
         this.page_slots_offset = new ArrayList<>();   //重构槽的偏移量数组
@@ -124,7 +124,7 @@ public class PageNoLeaf extends Page{
     }
 
     //插入一个新的索引节点
-    protected void insert(int next,byte[] index_key_bytes,int leftPage_offset,int rightPage_offset) {
+    public void insert(int next,byte[] index_key_bytes,int leftPage_offset,int rightPage_offset) {
         int prev = getPrevOffset(next);
         int slot_head_num = slotNumSearch(prev);       //找出槽头位置
         int slot_head = page_slots_offset.get(slot_head_num);
@@ -145,13 +145,32 @@ public class PageNoLeaf extends Page{
         checkSlotSplit(slot_head_num);            //检查更新槽头是否需要分裂
     }
 
-    /****************************分裂*************************************/
+    //页合并特殊方法!  慎重
+    public void insert(int prev,byte[] node_bytes){
+        int next = getNextOffset(prev);
+        //获取空闲指针
+        int offset = page_spare;
+        spareAdd();
+        //插入
+        page_buffer.position(offset);
+        page_buffer.put(node_bytes);
+        //槽全为0
+        setOwned(offset,(byte)0);
+        setType(offset,(byte)0x01);
+        //改变前后指针
+        setNextOffset(offset,next);
+        setPrevOffset(offset,prev);
+        setPrevOffset(next,offset);
+        setNextOffset(prev,offset);
+        page_num ++;
+    }
+
 
     /****************************删除节点********************************/
 
 
     //范围删除,给出一个双闭区间的索引值,删除该页中在此双闭区间中的所有索引值  delete_begin和delete_end分别是(、)本身不被删除
-    protected int[] delete(Object index_key_begin,Object index_key_end){
+    public int[] delete(Object index_key_begin,Object index_key_end){
         int prt = Search(index_key_begin);     //所要删除节点的前一个节点偏移量
         int delete_begin = getNextOffset(prt);    //获取prt的下一个偏移量   即第一个需要删除的节点
         if(compare(index_key_begin,delete_begin) == 0)  delete_begin = getNextOffset(delete_begin);
@@ -173,7 +192,7 @@ public class PageNoLeaf extends Page{
     }
 
     //范围删除,给出一个单区间的索引值,要求>=  或者<=该索引值的节点都要被删除
-    protected int deleteOneSide(Object index_key,int model){
+    public int deleteOneSide(Object index_key,int model){
         int prt = Search(index_key);    //所要删除节点的前一个节点偏移量
         int result;
         //>=    delete_begin 是(
@@ -213,8 +232,9 @@ public class PageNoLeaf extends Page{
 
     /****************************合并*************************************/
 
+    /*
     //该页吞并page页  model 1代表该页在左  2代表该页在右
-    protected void merge(Page page,int model){
+    public void merge(Page page,int model){
         if(page.page_level != this.page_level)  throw new RuntimeException("逻辑错误");
         if(page.page_num == 0)  return;      //page页的节点数量为0，不做任何处理
         //右顺序插入
@@ -277,7 +297,7 @@ public class PageNoLeaf extends Page{
             setIndex_key_bytes(offset,new byte[]{0,0,0,0});
             return;
         }
-        Page rightPage = table.deSerializePage(getLeftPage(next));
+        Page rightPage = table.getPage(getLeftPage(next));
 
         Stack<byte[]> stack = new Stack<>();   //栈中储存着可能利用到的索引
         //只要右页不是叶子页 就一直递推到叶子页
@@ -292,15 +312,13 @@ public class PageNoLeaf extends Page{
             if(rightPage.page_level == (byte)0x00) break;
             //到下一层
             PageNoLeaf page = (PageNoLeaf)rightPage;
-            rightPage = table.deSerializePage(page.getLeftPage(first));
+            rightPage = table.getPage(page.getLeftPage(first));
         }
         //为空说明该节点的右页没有一层可以利用索引
         if(stack.isEmpty()){
             /*
             if(getType(next) == (byte)0x11) offsetDelete(next);
             else {setIndex_key_bytes(offset,getIndex_key_bytes(next));offsetDelete(next);}
-
-             */
 
             if(getType(next) == (byte)0x11)  {
                 setType(offset,(byte) 0x11);  //为了不破坏查找功能 只要键值为空的都是0x11
@@ -309,12 +327,10 @@ public class PageNoLeaf extends Page{
             else setIndex_key_bytes(offset,getIndex_key_bytes(next));
 
         }else setIndex_key_bytes(offset,stack.pop());
-
-        /*
-            1.offset 删除掉next  会破坏掉页地址检查机制
-            2.启动重检页地址判断
-        */
     }
+
+     */
+
 
     /*********************************序列*******************************************/
 
@@ -331,7 +347,7 @@ public class PageNoLeaf extends Page{
     //--------------//
 
     //获取左页信息
-    protected int getLeftPage(int offset){
+    public int getLeftPage(int offset){
         //游标定位到左页信息的下方
         page_buffer.position(offset + LEFT_PAGE_OFFSET);
         return page_buffer.getInt();

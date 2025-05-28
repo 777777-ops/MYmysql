@@ -32,7 +32,7 @@ public class PageLeaf extends Page{
     /********************************查询************************************/
 
     //查看索引是否在本页中
-    protected boolean contain(Object index_key){
+    public boolean contain(Object index_key){
         int prt = Search(index_key);
         prt = getNextOffset(prt);
         if(prt == MAX)  return false;
@@ -40,7 +40,7 @@ public class PageLeaf extends Page{
     }
 
     //查询该记录的信息  (通过主键)
-    protected Table.SearchResult searchValues(Object index_key){
+    public Table.SearchResult searchValues(Object index_key){
         int prev = Search(index_key);
         int prt = getNextOffset(prev);
         if(prt == MAX)  return null;
@@ -50,7 +50,7 @@ public class PageLeaf extends Page{
     /**********************************插入*********************************/
 
     //插入
-    protected void insert(Object[] values,int heap_no,Object index_key){
+    public void insert(Object[] values,int heap_no,Object index_key){
         int offset = page_spare;   //本记录的偏移量就是空闲指针
         spareAdd();                //空闲指针增加,更新缓冲数组大小
         int next; int prev;
@@ -102,7 +102,7 @@ public class PageLeaf extends Page{
     }
 
     //重新规划整个page_buffer   用于重构页或者页分裂的新页   //所插入的数组是逻辑物理上连续的  //要重新分配槽
-    protected void resetAllBuffer(byte[] data){
+    public void resetAllBuffer(byte[] data){
         valuesMap.clear();
         objectMap.clear();                            //双缓冲池清空
         page_num = 0;                                 //重构页中节点数
@@ -146,8 +146,9 @@ public class PageLeaf extends Page{
 
     /**********************************合并**********************************/
 
+    /*
     //本页与page页进行合并 page页被删除
-    protected void merge(Page page,int model){
+    public void merge(Page page,int model){
         if(page.page_level != this.page_level)  throw new RuntimeException("逻辑错误");
         if(page.page_num == 0)  return;      //page页的节点数量为0，不做任何处理
 
@@ -182,6 +183,7 @@ public class PageLeaf extends Page{
             page_num ++;     page.page_num --;
         }
     }
+    */
 
     /**********************************删除**********************************/
 
@@ -191,7 +193,7 @@ public class PageLeaf extends Page{
     */
 
     //范围删除,给出一个双闭区间的索引值,删除该页中在此双闭区间中的所有索引值
-    protected int[] delete(Object index_key_begin,Object index_key_end){
+    public int[] delete(Object index_key_begin,Object index_key_end){
 
         int delete_begin = Search(index_key_begin);    //所要删除节点的前一个节点偏移量
         int prt = getNextOffset(delete_begin);    //获取prt的下一个偏移量   即第一个需要删除的节点
@@ -209,7 +211,7 @@ public class PageLeaf extends Page{
     }
 
     //范围删除,给出一个单区间的索引值,要求>=  或者<=该索引值的节点都要被删除
-    protected int deleteOneSide(Object index_key,int model){
+    public int deleteOneSide(Object index_key,int model){
         int prt = Search(index_key);    //所要删除节点的前一个节点偏移量
         //>=    delete_begin 是(
         if(model == 1) {
@@ -261,8 +263,24 @@ public class PageLeaf extends Page{
         if(values == null){
             //游标到记录数据字节的开头
             page_buffer.position(offset + BEGIN_OFFSET);
-            values = Record.deSerializeData(page_buffer,table); //反序列数据
+            values = deSerializeData(page_buffer,table); //反序列数据
             valuesMap.put(offset,values);                //保存到缓冲池中
+        }
+        return values;
+    }
+
+    //部分反序列化记录数据
+    private Object[] deSerializeData(ByteBuffer buffer, Table table) {
+        int Head = buffer.position();             //数据字节数组的头下标
+        //获取字段数据
+        Collection<Table.TableColumn> collection = table.getFieldsProperty();
+        Object[] values = new Object[collection.size()];
+        int index = 0;
+        for (Table.TableColumn tableColumn : collection) {
+            buffer.position(tableColumn.offset + Head);
+            short length = tableColumn.length;
+            values[index] = ByteTools.deSerializeSingleObject(buffer,length);
+            index ++;
         }
         return values;
     }

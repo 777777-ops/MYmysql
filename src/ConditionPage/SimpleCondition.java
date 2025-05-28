@@ -12,9 +12,9 @@ public class SimpleCondition extends Condition{
 
     private static final List<String> VALID_OPERATORS = Arrays.asList(">=", "<=", "==","to");
 
-    String field;
-    String operator;
-    Object[] data;
+    public String field;
+    public String operator;
+    public Object[] data;
 
     public SimpleCondition (String conditionStr, Table table) throws IllegalArgumentException{
         this.table = table;

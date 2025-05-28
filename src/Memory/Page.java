@@ -43,7 +43,6 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     //  (不放入磁盘中)
     protected ByteBuffer page_buffer;              //维护一个该页在字节文件中的数组，致力于减少IO次数
     protected HashMap<Integer,Object> objectMap;   //维护一个索引值的缓冲表,减少反序列索引值的次数
-    protected IndexRecord Page_Head_Try;           //逻辑测试
 
     public static final int INDEX_RECORD_HEAD = 11;                      //索引记录头
     public static final int RECORD_HEAD = INDEX_RECORD_HEAD + 4;         //记录头
@@ -90,7 +89,6 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         //初始化缓冲数组
         this.page_buffer = ByteBuffer.wrap(BytesIO.readDataInto(page_used,page_offset,table.table_name));
         this.objectMap = new HashMap<>();
-
     }
 
     //伪最大值和伪最小值的初始化
@@ -154,7 +152,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //集成上面两种搜索   返回小于index_key的第一个节点偏移量
-    protected int Search(Object index_key){
+    public int Search(Object index_key){
         int slot_head_num = slotsSearch(index_key);
         int slot_head = page_slots_offset.get(slot_head_num);
         return lineSearch(index_key,slot_head);
@@ -213,6 +211,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
 
     /*******************************插入*************************/
 
+    /*
     //插入一个新的节点   在prev后面插入一整个节点字节数组    //用于页合并
     protected void insert(int prev,int slot_head_num,int offset,byte[] indexKey_bytes){
 
@@ -232,9 +231,10 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         setPrevOffset(offset,prev);
 
     }
+    */
 
     //重新规划整个page_buffer   用于重构页或者页分裂的新页
-    protected abstract void resetAllBuffer(byte[] data);
+    public abstract void resetAllBuffer(byte[] data);
 
     /*
         请明确槽数量的作用！ 不必实时更新owned!
@@ -278,7 +278,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     /******************************删除***********************************/
 
     //根据位置删除
-    protected void offsetDelete(int offset,int model){
+    public void offsetDelete(int offset,int NoLeafPageModel){
 
         // model=2为硬删除  model=1为软删除  软删除只删除根
         if(offset == MAX || offset == MIN) throw new RuntimeException("逻辑错误");
@@ -322,22 +322,22 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         //叶子节点的前后改变
         if(this instanceof PageNoLeaf p){
             int son = p.getLeftPage(offset);
-            if(model == 2) {
+            if(NoLeafPageModel == 2) {
                 //硬删除
                 table.clearRootPage(son);
             }else {
                 //软删除
                 table.adjustLeafPage(son);
-                table.deletePageInSpace(table.deSerializePage(son));
+                table.deletePageInSpace(table.getPage(son));
             }
         }
     }
 
     //范围删除,给出一个双闭区间的索引值,删除该页中在此双闭区间中的所有索引值
-    protected abstract int[] delete(Object index_key_begin,Object index_key_end);
+    public abstract int[] delete(Object index_key_begin,Object index_key_end);
 
     //范围删除,给出一个单区间的索引值,要求>=  或者<=该索引值的节点都要被删除
-    protected abstract int deleteOneSide(Object index_key, int model);
+    public abstract int deleteOneSide(Object index_key, int model);
 
     //逻辑删除 ：删除节点、更新空闲链表、页中节点数减一
     protected void nodeDelete(int prt){
@@ -370,7 +370,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     /******************************页合并*****************************************/
 
     //检查当前页是否需要合并
-    protected boolean checkPageMerge(){
+    public boolean checkPageMerge(){
         if(page_num < 2 && this != table.getRoot() && this.page_level != (byte)0xff)
             return true;
         else
@@ -378,7 +378,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //本页与page页进行合并 page页被删除
-    protected abstract void merge(Page page,int model);
+    //public abstract void merge(Page page,int model);
 
     /******************************分裂和页优化***********************************/
 
@@ -408,7 +408,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //检查当前页是否达到分裂阈值
-    protected boolean checkPageSplit(){
+    public boolean checkPageSplit(){
         int percent = (page_used * 100)/(((int)page_space) * Table.KB);
         if(page_slots_offset.size() <= 2)  return false;
         if(this instanceof PageLeaf && page_num >=5)
@@ -419,7 +419,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         return  false;
     }
 
-    //分裂
+    /*
     protected void PageSplit(PageNoLeaf parent,int offset){
 
         //对半分裂
@@ -454,7 +454,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         if(this instanceof PageLeaf){
             //需要更新原叶子页后面的那个页
             if(((PageLeaf)this).page_next_offset != 0){
-                PageLeaf next = (PageLeaf) table.deSerializePage(((PageLeaf)this).page_next_offset);
+                PageLeaf next = (PageLeaf) table.getPage(((PageLeaf)this).page_next_offset);
                 next.page_prev_offset = rightPage.page_offset;
                 ((PageLeaf)rightPage).page_next_offset = next.page_offset;
             }
@@ -467,6 +467,8 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         //更新本页缓冲数组
         resetAllBuffer(this_page_bytes);
     }
+    */
+
 
     /******************************序列页头*******************************/
 
@@ -566,80 +568,11 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         return instance;
     }
 
-    /*****************************序列索引记录*****************************/
-
-
-    /*
-    //序列化该页中的每一个索引记录  (改)
-    protected void serializeIndexRecords(){
-
-        while(indexRecord != null){
-            byte[] singleData = indexRecord.serialize();
-            //写入缓冲数组
-            int offset = indexRecord.offset - page_offset;
-            page_buffer.position(offset);
-            page_buffer.put(singleData);
-
-            indexRecord = indexRecord.next_record;
-        }
+    //写入磁盘
+    public void serializePageOut(){
+        this.serializeHead();  //序列化页头
+        BytesIO.writeDataOut(page_buffer.array(),page_offset,table.table_name);
     }
-
-     */
-
-
-    //反序列页中的所有索引记录   （
-    public void deSerializeIndexRecords(){
-        IndexRecord indexRecord = deSerializeSingle(getNextOffset(page_slots_offset.get(0)));
-        Page_Head_Try = indexRecord;
-        while(indexRecord != null){
-            //配合java Visualizer  隐藏掉一些没必要的变量
-            indexRecord.table = null;   /*TODO*/
-            //if(indexRecord instanceof Record) ((Record)indexRecord).valuesMap = new HashMap<>();
-            //开始反序列
-            indexRecord.next_record = deSerializeSingle(indexRecord.next_offset);
-            indexRecord = indexRecord.next_record;
-        }
-    }
-
-    /*
-    //反序列空闲链表的节点
-    protected void deSerializeSpareIndexRecords(){
-
-        IndexRecord indexRecord = deSerializeSingle(page_spare);
-        Page_Spare_Try = indexRecord;
-        int getLength = getNodeLength();              //一个节点的数组长度
-        while(indexRecord.next_record_offset != page_used){
-            int offset = indexRecord.next_record_offset;  //下一条索引记录相对偏移量
-            //开始反序列
-            page_buffer.position(offset);
-            byte[] data = new byte[getLength];
-            page_buffer.get(data);
-            indexRecord.next_record = deSerializeSingle(indexRecord.next_record_offset);
-            indexRecord = indexRecord.next_record;
-        }
-    }
-
-     */
-
-
-    //反序列页中的单条索引记录  (根据相对偏移量)
-    protected IndexRecord deSerializeSingle(int relative_offset){
-
-        if(relative_offset == MAX ||relative_offset == MIN)
-                return null;
-
-        int getLength = getNodeLength();
-        //开始反序列
-        page_buffer.position(relative_offset);
-        byte[] data = new byte[getLength];
-        page_buffer.get(data);
-
-        IndexRecord indexRecord = IndexRecord.deSerialize(data,this.table);
-        indexRecord.offset = relative_offset;   //记录的偏移量在数组中的值失效！！
-        return indexRecord;
-    }
-
-
     /******************************索引记录的数组操作**********************/
 
 
@@ -716,7 +649,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //获取本节点的字节数组
-    protected byte[] getBytes(int offset){
+    public byte[] getBytes(int offset){
         byte[] bytes = new byte[getNodeLength()];
         page_buffer.position(offset);
         page_buffer.get(bytes);
@@ -743,7 +676,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //获取下一条记录的数据
-    protected int getNextOffset(int offset){
+    public int getNextOffset(int offset){
         //游标到要获取数据的下方
         page_buffer.position(offset + NEXT_OFFSET);
         return page_buffer.getInt();
@@ -756,33 +689,34 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
         page_buffer.putInt(prev_offset);
     }
 
+    /*TODO*/
     //获取上一条记录的数据
-    protected int getPrevOffset(int offset){
+    public int getPrevOffset(int offset){
         //游标到要获取数据的下方
         page_buffer.position(offset + PREV_OFFSET);
         return page_buffer.getInt();
     }
-
     //--------------------------//
 
     //修改槽中数量
-    protected void setOwned(int offset,byte owned_n){
+    public void setOwned(int offset,byte owned_n){
         //游标到要修改数据的下方
         page_buffer.position(offset + OWNED);
         page_buffer.put(owned_n);
     }
 
     //获取槽中数量
-    protected byte getOwned(int offset){
+    public byte getOwned(int offset){
         //游标到要获取数据的下方
         page_buffer.position(offset + OWNED);
         return page_buffer.get();
     }
 
     //槽头加一
-    protected void addOwned(int slot_head_num){
-        int slot_head = page_slots_offset.get(slot_head_num);
-        setOwned(slot_head,(byte)(getOwned(slot_head) + 1));
+    public void addOwned(int offset){
+        byte owned = getOwned(offset);
+        if(owned == 0) throw new RuntimeException("非槽头操作");
+        setOwned(offset,(byte)(owned + 1));
     }
 
     //--------------------------//
@@ -817,7 +751,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
      */
 
     //已知一个索引的情况下，比较与另一个索引的大小
-    protected int compare(Object index_key,int b_offset){
+    public int compare(Object index_key,int b_offset){
         final byte MIN = (byte)0x02;
         final byte MAX = (byte)0x03;
         final byte MAX_I = (byte) 0x11;
@@ -839,7 +773,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //获取索引值
-    protected Object getIndex_key(int offset){
+    public Object getIndex_key(int offset){
         //查看缓冲池是否有
         Object a = objectMap.get(offset);
         if(a!=null) return a;
@@ -859,7 +793,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //获取索引值字节数组
-    protected byte[] getIndex_key_bytes(int offset){
+    public byte[] getIndex_key_bytes(int offset){
         //获取类型
         byte rec_type = getType(offset);
         //移动到索引位置
@@ -873,7 +807,7 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     }
 
     //修改索引值字节数组
-    protected void setIndex_key_bytes(int offset,byte[] bytes){
+    public void setIndex_key_bytes(int offset,byte[] bytes){
         //缓冲池删除
         objectMap.remove(offset);
         //获取类型
@@ -890,14 +824,14 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     //--------------------------//
 
     //获取索引记录的类型
-    protected byte getType(int offset){
+    public byte getType(int offset){
         //游标到要获取数据的下方
         page_buffer.position(offset + REC_TYPE);
         return page_buffer.get();
     }
 
     //修改索引记录的类型
-    protected void setType(int offset,byte type){
+    public void setType(int offset,byte type){
         //游标到要修改数据的下方
         page_buffer.position(offset + REC_TYPE);
         page_buffer.put(type);
@@ -913,7 +847,8 @@ public abstract class Page{    //一张表文件最多储存1MB  1**20位，页�
     public int getPage_spare() {return page_spare;}
     public int getPage_used() {return page_used;}
     public int getPage_min() {return page_min;}
-    public IndexRecord getPage_Head_Try(){return Page_Head_Try;}
+    public List<Integer> getPage_slots_offset(){return page_slots_offset;}
+    public void setPage_num(int num){this.page_num = (short) num;}
     //返回本页的所有数据集合
     public LinkedHashMap<String,Object> getPage_all(){
         LinkedHashMap<String,Object> map = new LinkedHashMap<>();

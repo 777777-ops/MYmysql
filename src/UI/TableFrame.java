@@ -1,6 +1,7 @@
 package UI;
 import ConditionPage.ColumnBuilder;
-import ConditionPage.NestedCondition;
+import Memory.Event.CurdEvent;
+import Memory.Event.PageManagerEvent;
 import Memory.Table;
 
 import javax.swing.*;
@@ -233,8 +234,8 @@ public class TableFrame extends JFrame {
         delete.addActionListener(e -> new SwingWorker<Void,Void>() {
             @Override
             protected Void doInBackground() throws RuntimeException {
-                NestedCondition condition = new NestedCondition(jTextField.getText(), table);
-                condition.runDelete();
+                CurdEvent.deleteEvent event = new CurdEvent.deleteEvent(jTextField.getText());
+                table.eventBus.execute(event);
                 return null;
             }
             @Override
@@ -260,7 +261,7 @@ public class TableFrame extends JFrame {
         merge.addActionListener(e -> new SwingWorker<Void,Void>() {
             @Override
             protected Void doInBackground() throws RuntimeException {
-                table.allLeafPageMergeCheck();
+                table.eventBus.execute(new PageManagerEvent.MergeEvent());
                 return null;
             }
             @Override
@@ -301,8 +302,9 @@ public class TableFrame extends JFrame {
             @Override
             protected DefaultTableModel doInBackground() throws RuntimeException {
                 String text = jTextField.getText();
-                NestedCondition condition = new NestedCondition(text, table);
-                Object[][] o = condition.runSearch();
+                CurdEvent.selectEvent event = new CurdEvent.selectEvent(text);
+                table.eventBus.execute(event);
+                Object[][] o = extractValuesFromSelect(event.getResult());
                 return new DefaultTableModel(o, table.getFieldNamesArr());
             }
             @Override
@@ -332,6 +334,15 @@ public class TableFrame extends JFrame {
         queryPanel.add(buttonPanel, BorderLayout.SOUTH);
 
         container.add(queryPanel, "QUERY");
+    }
+
+    private Object[][] extractValuesFromSelect(Collection<Table.SearchResult> collection){
+        Object[][] result = new Object[collection.size()][];
+        int index = 0;
+        for (Table.SearchResult searchResult : collection) {
+            result[index++] = searchResult.values;
+        }
+        return result;
     }
 
     //---------------------//

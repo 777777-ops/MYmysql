@@ -1,5 +1,8 @@
 package Memory;
 import DataIO.BytesIO;
+import Memory.Cache.CacheStrategy;
+import Memory.Cache.LRUCacheStrategy;
+import Memory.Event.*;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -33,14 +36,17 @@ public class Table {
     //不用写入文件中的变量
     public final HashSet<String> indexSet = new HashSet<>();            //该表中已创建的索引集合
     public final HashMap<Integer,Object> deleteMap = new HashMap<>();   //删除日志  Integer是页地址 object是主键 在表进入磁盘前要处理
-    private final HashMap<Page,Integer> page_cache = new HashMap<>();    //页缓冲池
+    private final CacheStrategy cache = new LRUCacheStrategy(100,this);    //页缓冲池
+    public final EventBus eventBus = new EventBus();
     private final int index_length;                    //主键字节长度(包括索引记录头的)
+
     //表可改变的全局变量  (写入)
     public int RecordLengthAdd;                  //行数据字节可拓展的字节数   (默认64)
     public int SlotSplit;                        //页中槽分裂的阈值          (默认5)
     public int PageLeafSpace;                    //叶子页大小       单位KB   (默认16)   (未实现)
     public int PageNoLeafSpace;                  //非叶子页大小              (默认2)    (未实现)
     public int PageSplit;                        //页分裂阈值       单位%    (默认70)   (未实现)
+
 
     //字段信息的内部类
     public static class TableColumn{
@@ -122,6 +128,8 @@ public class Table {
         index_length = calculateIndexLength() + Page.INDEX_HEAD;
         if(primaryName != null) indexSet.add(primaryName);
 
+        register();
+
     }
 
     //构造函数：反序列一张表
@@ -143,17 +151,26 @@ public class Table {
 
         this.fields = fields;
         this.spareList = spareList;
-
         //根页
         if(root_offset == 0) root = null;
-        else root = deSerializePage(root_offset);
+        else root = getPage(root_offset);
         //根据给出的变量初始化的数据
         index_length = calculateIndexLength() + Page.INDEX_HEAD;
         initValueIndex();
         if(primaryName != null ) indexSet.add(primaryName);
+
+        register();
     }
 
-
+    //注册事件
+    public void register(){
+        eventBus.registerHandler(new CurdEventHandler.selectWayHandler(this));
+        eventBus.registerHandler(new CurdEventHandler.insertHandler(this));
+        eventBus.registerHandler(new CurdEventHandler.selectHandler(this));
+        eventBus.registerHandler(new CurdEventHandler.deleteHandler(this));
+        eventBus.registerHandler(new PageManagerHandler.SpiltHandler(this));
+        eventBus.registerHandler(new PageManagerHandler.MergeHandler(this));
+    }
 
 
     /****************************字段**********************************/
@@ -242,13 +259,13 @@ public class Table {
         page.page_level = -1;
         if(!spareList.containsKey(page.page_offset)) {
             spareList.put(page.page_offset,page.page_space);
-            deletePageInCache(page.page_offset);
+            cache.popPage(page.page_offset);
         }
     }
 
     //清扫一个根下面的所有页  包括根    写个遍历
     public void clearRootPage(int pageRoot_offset){
-        Page page = deSerializePage(pageRoot_offset);
+        Page page = getPage(pageRoot_offset);
         int prt = page.getNextOffset(Page.MIN);
         Stack<Pair> stack = new Stack<>();
         while(true){
@@ -257,7 +274,7 @@ public class Table {
             while(prt == Page.MAX && !stack.isEmpty()){
                 deletePageInSpace(page);        //结束该页
                 Pair pair = stack.pop();
-                page = deSerializePage(pair.page_offset);
+                page = getPage(pair.page_offset);
                 prt = page.getNextOffset(pair.node_offset);
             }
             //遍历结束
@@ -265,7 +282,7 @@ public class Table {
             //遍历到最底层
             while(page instanceof PageNoLeaf p){
                 stack.push(new Pair(page.page_offset,prt));   //记录该层
-                page = deSerializePage(p.getLeftPage(prt));
+                page = getPage(p.getLeftPage(prt));
                 prt = page.getNextOffset(Page.MIN);
             }
             //叶子页 （最底层）
@@ -278,7 +295,7 @@ public class Table {
     }
 
     //创建一个新页
-    protected Page insertPage(byte level){
+    public Page insertPage(byte level){
 
         Page instance;
         int offset = findSpareSpace(level);
@@ -288,7 +305,7 @@ public class Table {
             instance = new PageNoLeaf(level,(byte)PageNoLeafSpace,offset,this);
         }else {throw new RuntimeException("非法page_levee");}
         //缓冲池更新
-        page_cache.put(instance,0);   /*TODO*/
+        cache.pushPage(instance);
         return instance;
     }
 
@@ -325,191 +342,20 @@ public class Table {
         }
     }
 
-    //获取一张表中在顺序逻辑上的第一页
-    private int getFirstPageOffset(){
-        Page page = root;
-        while(page instanceof PageNoLeaf p){
-            int page_offset = p.getLeftPage(p.getNextOffset(Page.MIN));
-            page = deSerializePage(page_offset);
-        }
-        return page.page_offset;
-    }
-
-    //根据主键查询某一记录的信息   （B+）
-    public List<SearchResult> searchPrimary(Object[] index_key,String operator){
-        Page page = root;
-        while(page instanceof PageNoLeaf p)
-        {
-            int prev = p.Search(index_key[0]);     //所要进入页的前节点
-            int next = p.getNextOffset(prev);   //所要进入页的后节点
-            //如果next节点等于index_key  prev和next全部后移
-            if(p.compare(index_key[0],next) == 0){prev = next ;next = p.getNextOffset(next);}
-            page = deSerializePage(p.getLeftPage(next));
-        }
-        PageLeaf leaf = ((PageLeaf)page);
-        SearchResult head = leaf.searchValues(index_key[0]);      //头节点
-        List<SearchResult> result = new ArrayList<>();         //结果
-        switch (operator){
-            case "==": {
-                int prt = head.offset;
-                if (leaf.compare(index_key[0], prt) == 0) result.add(head);
-                return result;
-            }
-            case ">=": {
-                int page_offset = head.page_offset;
-                while (page_offset != 0) {
-                    leaf = (PageLeaf) deSerializePage(page_offset);
-                    int prt;
-                    if(page_offset == head.page_offset) prt = head.offset;
-                    else prt = leaf.getNextOffset(Page.MIN);
-                    while (prt != Page.MAX) {
-                        result.add(new SearchResult(page_offset,prt,leaf.getValues(prt)));
-                        prt = leaf.getNextOffset(prt);
-                    }
-                    page_offset = leaf.page_next_offset;
-                }
-                return result;
-            }
-            case "<=":{
-                int page_offset = getFirstPageOffset();
-                while (page_offset != head.page_offset){
-                    leaf = (PageLeaf) deSerializePage(page_offset);
-                    int prt = leaf.getNextOffset(Page.MIN);
-                    while (prt != Page.MAX) {
-                        result.add(new SearchResult(page_offset,prt,leaf.getValues(prt)));
-                        prt = leaf.getNextOffset(prt);
-                    }
-                    page_offset = leaf.page_next_offset;
-                }
-                //此时的page_offset到了head页
-                leaf = (PageLeaf) deSerializePage(page_offset);
-                int prt = leaf.getNextOffset(Page.MIN);
-                while(prt != head.offset){
-                    result.add(new SearchResult(page_offset,prt,leaf.getValues(prt)));
-                    prt = leaf.getNextOffset(prt);
-                }
-                //此时prt就是目标节点 需判断是否 ==
-                if (leaf.compare(index_key, prt) == 0) result.add(head);
-                return result;
-            }
-            case "to":{
-                int page_offset = head.page_offset;
-                int prt = head.offset;
-                while(leaf.compare(index_key[1],prt) >= 0){
-                    result.add(new SearchResult(page_offset,prt,leaf.getValues(prt)));
-                    prt = leaf.getNextOffset(prt);
-                    if(prt == Page.MAX){
-                        page_offset = leaf.page_next_offset;  if(page_offset == 0) break;
-                        leaf = (PageLeaf)deSerializePage(page_offset);
-                        prt = leaf.getNextOffset(Page.MIN);
-                    }
-                }
-                return  result;
-            }
-            default: throw new RuntimeException("不可能到达的语句");
-        }
-
-    }
-
-    //所有的行数据全部都呈现出来  （线性）
-    public List<SearchResult> searchLinked(){
-        List<SearchResult> result = new ArrayList<>();
-        int page_offset = getFirstPageOffset();
-        while(page_offset != 0){
-            PageLeaf leaf = (PageLeaf) deSerializePage(page_offset);
-            int prt = leaf.getNextOffset(Page.MIN);
-            while(prt != Page.MAX){
-                result.add(new SearchResult(page_offset,prt,leaf.getValues(prt)));
-                prt = leaf.getNextOffset(prt);
-            }
-            page_offset = leaf.page_next_offset;
-        }
-        return result;
-    }
-
     /****************************插入*************************************/
 
-    //插入一条新记录
-    private void insertRec(Object[] values) throws RuntimeException {
-
-        //从table中获取独特标识
-        int heap_no = this.getDefault_key(1);
-        //获取主键
-        Object index_key;
-        if(primaryKey == null) index_key = heap_no;
-        else index_key = values[getFieldIndex(primaryKey)];
-        //定位到叶子页
-        Stack<Pair> stack = new Stack<>();
-        Page page = root;
-        while(page instanceof PageNoLeaf p)
-        {
-            int prev = p.Search(index_key);     //所要进入页的前节点
-            int prt = p.getNextOffset(prev);   //所要进入页的节点
-            //如果next节点等于index_key  prev和next全部后移
-            if(p.compare(index_key,prt) == 0){prt = p.getNextOffset(prt);}
-            //进入栈   栈中存放进入页的节点的前一个节点，以及页
-            stack.push(new Pair(page.page_offset,prt));
-            page = deSerializePage(p.getLeftPage(prt));
-
-        }
-        //page现在是叶子页了
-        if(((PageLeaf)page).contain(index_key))  throw new RuntimeException("该表中已有该主键");
-        //插入
-        ((PageLeaf)page).insert(values,heap_no,index_key);
-        //需要页分裂
-        while(page.checkPageSplit()){
-            PageNoLeaf parent;   int prt = Page.PAGE_HEAD;
-            if(stack.isEmpty()) {parent = (PageNoLeaf) this.insertPage((byte)(page.page_level + 1)); root = parent;}
-            else{Pair pair = stack.pop(); parent = (PageNoLeaf) deSerializePage(pair.page_offset); prt= pair.node_offset;}
-            //分裂
-            page.PageSplit(parent,prt);
-            page = parent;           //page跳转至父页
-        }
-    }
+    //外接
+    public void insert(List<String> strings){eventBus.execute( /*TODO*/
+            new CurdEvent.insertEvent(turnStringsToObjects(strings)));}
 
     //外接
-    public void insert(List<String> strings) throws RuntimeException {insertRec(checkObjects(strings));}
-
-    public void insert(String... strings) throws RuntimeException{insertRec(checkObjects(Arrays.asList(strings)));}
+    public void insert(String... strings){insert(Arrays.asList(strings));}
 
 
     //----插入检查且转换-------//
 
-    /*
-    //根据字段集的属性检查每一个插入的字段行数据是否可行   默认顺序：无指定顺序  valueMap必须是空的
-    private boolean checkObjects(Object... objects) throws RuntimeException {
-        //Objects长度与fields不一样
-        if(objects.length != fields.size())  return false;
-
-        int index = 0;
-        for (Map.Entry<String, TableColumn> map : fields.entrySet()) {
-            Object object = objects[index];
-            TableColumn value = map.getValue();
-            //类型不一样
-            if(object.getClass() != value.type && object != null) {valuesMap.clear();return false;}
-            //如果是字符串 长度超过规定
-            if(object instanceof String)
-                if(((String)object).length() > value.length){valuesMap.clear(); return false;}
-            //该值为null 且明确不能为null
-            if(object == null && !value.couldNull){valuesMap.clear(); return false;}
-            //明确不能重复
-            if(!value.couldRepeated){/*TODO}
-
-            //没问题
-            valuesMap.put(map.getKey(),object);
-
-            //下一个object
-            index++;
-        }
-        return  true;
-    }
-
-
-
-     */
-
-    //根据字段集的属性检查每一个插入的字段行数据是否可行  给Frame外接  /*TODO*/
-    private Object[] checkObjects(List<String> strings) throws RuntimeException{
+    //根据字段集的属性检查每一个插入的字段行数据是否可行  给Frame外接
+    private Object[] turnStringsToObjects(List<String> strings) {
         if(strings.size() != fields.size())  throw new RuntimeException("字段个数不符合");
         //插入记录的Object
         Object[] values = new Object[strings.size()];
@@ -526,7 +372,7 @@ public class Table {
     }
 
     //根据字段集属性检查单个字段的数据是否符合该字段的属性
-    public Object checkObject(String field,String str) throws RuntimeException{
+    public Object checkObject(String field,String str){
         Class<?> type = getFieldType(field);
         Object object;
         if (type == Integer.class){
@@ -557,84 +403,22 @@ public class Table {
 
     /****************************删除********************************/
 
-    //根据主键删除记录    外接
-    public void delete(Object[] index_key,String operator){
-        switch (operator) {
-            case ">=" -> deleteOneSide(index_key[0],1);
-            case "<=" -> deleteOneSide(index_key[0],2);
-            case "==" -> {delete(index_key[0],index_key[0]);}
-            default -> {delete(index_key[0], index_key[1]);}
-        }
-
+    //删除语句
+    public void delete(String conditions){
+        eventBus.execute(new CurdEvent.deleteEvent(conditions));
     }
 
-    //根据给出的SearchResult进行删除  外接
-    public void delete(SearchResult sr){
-        PageLeaf leaf = (PageLeaf)deSerializePage(sr.page_offset);
-        int prev = leaf.getPrevOffset(sr.offset);
-        int next = leaf.getNextOffset(sr.offset);
-        Object object = leaf.getIndex_key(sr.offset);   //主键
-        leaf.offsetDelete(sr.offset,2);
-        leaf.setNextOffset(prev,next);
-        leaf.setPrevOffset(next,prev);
-        //合并缓冲
-        deleteMap.putIfAbsent(sr.page_offset, object);
-    }
-
-    //根据主键删除记录   （带范围的）  between and
-    private void delete(Object index_key_begin,Object index_key_end){
-        int[] arr;         //本层的删除操作
-        Page left = root;
-        Page right = root;
-        arr = left.delete(index_key_begin,index_key_end);
-        while(arr.length != 0 && arr[0] != 0){
-            //到下一层
-            left = deSerializePage(arr[0]);
-            right = deSerializePage(arr[1]);
-            //缓存主键  并且更改前后页
-            if(left.page_level == 0) {
-                deleteMap.putIfAbsent(arr[0], index_key_begin);
-                deleteMap.putIfAbsent(arr[1], index_key_end);
-                if(left != right && ((PageLeaf)left).page_next_offset != right.page_offset){
-                    ((PageLeaf)left).page_next_offset = right.page_offset;
-                    ((PageLeaf)right).page_prev_offset = left.page_offset;
-                }
-            }
-
-            if(left == right)
-                arr = left.delete(index_key_begin,index_key_begin);
-            else {
-                arr[0] = left.deleteOneSide(index_key_begin,1);
-                arr[1] = right.deleteOneSide(index_key_end,2);
-            }
-        }
-    }
-
-    //根据主键删除记录    >=  <=
-    private void deleteOneSide(Object index_key,int model){
-        Page page = root;
-        //开始遍历
-        int down_page = page.deleteOneSide(index_key,model);
-        while(down_page != 0){
-            if(page.page_level == 1)
-                deleteMap.putIfAbsent(down_page, index_key);
-            page = deSerializePage(down_page);
-            down_page = page.deleteOneSide(index_key,model);
-        }
-        if(model == 1) ((PageLeaf)page).page_next_offset = 0;
-        if(model == 2) ((PageLeaf)page).page_prev_offset = 0;
-    }
 
     //调整某一叶子页的前后顺序  (叶子页的删除)
     protected void adjustLeafPage(int page_offset){
-        Page page = deSerializePage(page_offset);
+        Page page = getPage(page_offset);
         if(page instanceof PageLeaf leaf) {
             if(leaf.page_next_offset != 0) {
-                PageLeaf next_page = (PageLeaf) deSerializePage(leaf.page_next_offset);
+                PageLeaf next_page = (PageLeaf) getPage(leaf.page_next_offset);
                 next_page.page_prev_offset = leaf.page_prev_offset;
             }
             if(leaf.page_prev_offset != 0) {
-                PageLeaf prev_page = (PageLeaf) deSerializePage(leaf.page_prev_offset);
+                PageLeaf prev_page = (PageLeaf) getPage(leaf.page_prev_offset);
                 prev_page.page_next_offset = leaf.page_next_offset;
             }
         }
@@ -643,367 +427,19 @@ public class Table {
     /****************************页合并*********************************/
 
 
-    //根据删除日志，进行页合并
-    public void allLeafPageMergeCheck(){
-        Stack<Pair> stack;
-        Page page;
-        //遍历每一个已经删除的主键
-        for (Map.Entry<Integer, Object> map : deleteMap.entrySet()) {
-            if(deSerializePage(map.getKey()).page_level < 0) continue; /*TODO*/  //page_level < 0代表已被删除
-
-            Object index_key = map.getValue();
-            //根据被删除的主键查找页路径  可能会有偏差需要方法调整
-            stack = findWay_ToTargetPageOffset(index_key,map.getKey());
-            page = deSerializePage(stack.pop().page_offset);
-            if(page.page_offset != map.getKey()){throw new RuntimeException("...");}
-            //从叶子页层层递归上去检查是否有需要合并的页
-            while (page.checkPageMerge()) {
-                pageMergeControl(page,stack);
-                page = deSerializePage(stack.pop().page_offset);
-            }
-
-            stack.clear();
-            page = root; //重新开始
-        }
-        while(root.page_num == 1 && root instanceof PageNoLeaf p){
-            root = deSerializePage(p.getLeftPage(p.getNextOffset(Page.MIN)));
-        }
-        //清空
-        deleteMap.clear();
-    }
-
-    //----------------//
-
-    //下面四个方法用于精确定位 删除日志中的由于树结构发生调整 而导致的旧主键出现定位偏差的页地址
-
-    //给出主键 和 页地址 根据B+树结构找到该主键所在页的路径
-    private Stack<Pair> findWay_ToTargetPageOffset(Object index_key,int target_offset){
-        Stack<Pair> stack = indexKeyFindWay(index_key);
-        Page page = deSerializePage(stack.peek().page_offset);
-        //出现了偏差
-        if(page.page_offset != target_offset){
-            Page target = deSerializePage(target_offset);
-            //如果目标页没有节点   寻求左页帮忙
-            if(target.page_num == 0){
-                stack = findWay_LeftRun(target_offset);
-            }else{
-                stack = indexKeyFindWay(target.getIndex_key(target.getNextOffset(Page.MIN)));
-            }
-        }
-        return stack;
-    }
-
-    //根据主键找路径
-    private Stack<Pair> indexKeyFindWay(Object index_key){
-        Stack<Pair> stack = new Stack<>();
-        Page page = root;
-        while (page instanceof PageNoLeaf p){
-            //将该层的页保存
-            int prev = p.Search(index_key);
-            int prt = p.getNextOffset(prev);
-            if(p.compare(index_key,prt) == 0)  prt = p.getNextOffset(prt);
-            stack.push(new Pair(page.page_offset,prt));
-            //进入下一层
-            int page_offset = p.getLeftPage(prt);
-            page = deSerializePage(page_offset);
-        }
-        stack.push(new Pair(page.page_offset,0));
-        return stack;
-    }
-
-    //仅给出叶子页地址  返回正确完整路径  (左)
-    private Stack<Pair> findWay_LeftRun(int target_offset){
-        PageLeaf target = (PageLeaf) deSerializePage(target_offset);
-        //从左页找起
-        int prev = target.page_prev_offset;
-        while(prev != 0){
-            target = (PageLeaf) deSerializePage(prev);
-            if(target.page_num > 0) break;
-            //遍历
-            prev = target.page_prev_offset;
-        }
-        //找不到匹配的左页
-        if(prev == 0) {
-            //组一个第一页的路径
-            Page page = root;
-            Stack<Pair> stack = new Stack<>(); int prt = page.getNextOffset(Page.MIN);
-            while(page instanceof PageNoLeaf p){
-                stack.push(new Pair(page.page_offset,prt));
-                page = deSerializePage(p.getLeftPage(prt));
-                prt = page.getNextOffset(Page.MIN);
-            }
-            stack.push(new Pair(page.page_offset,0));
-            return findWay(stack,target_offset);
-        }
-        else {
-            Object index_key = target.getIndex_key(target.getNextOffset(Page.MIN));
-            return findWay(indexKeyFindWay(index_key),target_offset);
-        }
-
-    }
-
-    //给出一条路径，根据路径查找目标页的路径 (左)
-    private Stack<Pair> findWay(Stack<Pair> stack,int target_offset){
-        Page page = deSerializePage(stack.pop().page_offset);
-        int prt = Page.MIN;
-        while (true){
-            //到达叶子层
-            while(page instanceof PageNoLeaf p){
-                stack.push(new Pair(page.page_offset,prt));
-                page = deSerializePage(p.getLeftPage(prt));
-                prt = page.getNextOffset(Page.MIN);
-            }
-            prt = Page.MAX;
-            //判断是否相等
-            if(page.page_offset == target_offset) {
-                stack.push(new Pair(page.page_offset,0));
-                return stack;
-            }
-            while(prt == Page.MAX && !stack.isEmpty()){
-                Pair pair = stack.pop();
-                page = deSerializePage(pair.page_offset);
-                prt = pair.node_offset;
-                prt = page.getNextOffset(prt);   //下一个节点
-            }
-            if(prt == Page.MAX && stack.isEmpty())
-                break;
-        }
-        throw new RuntimeException("无法找到相应的叶子页");
-    }
-
-    //---------------------//
-
-    //页合并的控制端
-    private boolean pageMergeControl(Page page,Stack<Pair> stack){
-        //PageNoLeaf ancestor;   int ancestor_offset;
-        Pair pair = stack.peek();
-        PageNoLeaf parent = (PageNoLeaf) deSerializePage(pair.page_offset);
-        int prev = parent.getPrevOffset(pair.node_offset);   //page页节点的前节点
-        int next = parent.getNextOffset(pair.node_offset);   //page页节点的后节点
-        Page neighbor = null;                                                 //page页的邻居页
-        //开始找邻居页
-        if(page.page_num == 0) {pageMerge(page,pair,null,3,null,0); return true;} //无需寻找邻居页，直接删除
-        //父母页中只有一个工具节点的情况  寻找左邻居和右邻居都比较麻烦
-        if(prev == Page.MIN && next == Page.MAX){
-            return extremeLeftNeighbor(page,stack) || extremeRightNeighbor(page,stack);
-        }
-        //左极端情况  寻找左邻居麻烦
-        else if(prev == Page.MIN){
-            neighbor = deSerializePage(parent.getLeftPage(next));
-            if(neighbor.page_num + page.page_num < 5){
-                pageMerge(page,pair,neighbor,2,null,0);  return true;
-            }
-            //右邻居失败 找左邻居
-            return extremeLeftNeighbor(page,stack);
-        }
-        //右极端情况  寻找右邻居麻烦
-        else if(next == Page.MAX){
-            neighbor = deSerializePage(parent.getLeftPage(prev));
-            if(neighbor.page_num + page.page_num < 5){
-                pageMerge(page,pair,neighbor,1,parent,prev);  return true;
-            }
-            //左邻居失败 找右邻居
-            return extremeRightNeighbor(page,stack);
-        }
-        //页节点在中间的情况，最为普遍,处理最简单
-        else{
-            neighbor = deSerializePage(parent.getLeftPage(next));
-            if(neighbor.page_num + page.page_num < 5){
-                pageMerge(page,pair,neighbor,2,null,0);  return true;
-            }
-            neighbor = deSerializePage(parent.getLeftPage(prev));
-            if(neighbor.page_num + page.page_num < 5){
-                pageMerge(page,pair,neighbor,1,parent,prev);  return true;
-            }
-            return false;
-        }
-    }
-
-    //处理 找邻居页中的极端左情况    是pageMerge的辅助方法
-    private boolean extremeLeftNeighbor(Page page,Stack<Pair> stack){
-        Stack<Pair> s = new Stack<>();  s.addAll(stack);         //克隆一个stack栈来使用
-        Pair pair = s.pop();
-        PageNoLeaf parent = (PageNoLeaf) deSerializePage(pair.page_offset);         //page的父母页
-        int prt = pair.node_offset;                                            //父母页中当前页节点前节点
-        int prev = parent.getPrevOffset(prt);
-        PageNoLeaf ancestor = null;                                                 //极端情况肯定有祖先页
-        int ancestor_offset = 0;                                                  //祖先节点
-        Page neighbor = null;                                                       //邻居页
-        //找祖先页
-        while(prev == Page.MIN){
-            if(s.isEmpty()) { break;}  //已经到根页了，操作页就是最极端的左页
-            pair = s.pop();
-            parent = (PageNoLeaf) deSerializePage(pair.page_offset);
-            prev = parent.getPrevOffset(pair.node_offset);
-        }
-        //找邻居   prev != Page.MIN就说明找到祖先了
-        if(prev != Page.MIN){
-            ancestor = parent;
-            ancestor_offset = prev;
-            neighbor = deSerializePage(parent.getLeftPage(prev));
-            while(neighbor.page_level != page.page_level){
-                neighbor = deSerializePage(
-                        ((PageNoLeaf)neighbor).getLeftPage
-                                (neighbor.page_slots_offset.get(neighbor.page_slots_offset.size() - 1)));
-            }
-        }
-        //邻居存在  且可以合并
-        if(neighbor != null && neighbor.page_num + page.page_num < 5){
-            pageMerge(page,stack.peek(),neighbor,1,ancestor,ancestor_offset);
-            return true;
-        }
-        else return false;
-    }
-
-    //处理 找邻居页中的极端右情况    是pageMerge的辅助方法
-    private boolean extremeRightNeighbor(Page page,Stack<Pair> stack){
-        Stack<Pair> s = new Stack<>();  s.addAll(stack);         //克隆一个stack栈来使用
-        Pair pair = s.pop();
-        PageNoLeaf parent = (PageNoLeaf) deSerializePage(pair.page_offset);         //page的父母页
-        int next = parent.getNextOffset(pair.node_offset);//父页中当前页节点后节点
-        PageNoLeaf ancestor = null;                                                 //极端情况肯定有祖先页
-        int ancestor_offset = 0;                                                  //祖先节点
-        Page neighbor = null;                                                       //邻居页
-        //找祖先页
-        while(next == Page.MAX){
-            if(s.isEmpty()) { break;}  //已经到根页了，操作页就是最极端的右页
-            pair = s.pop();
-            parent = (PageNoLeaf) deSerializePage(pair.page_offset);
-            next = parent.getNextOffset(pair.node_offset);
-        }
-        //找邻居   next != Page.MAX就说明找到祖先了
-        if(next != Page.MAX){
-            ancestor = parent;
-            ancestor_offset = next;
-            neighbor = deSerializePage(parent.getLeftPage(next));
-            while(neighbor.page_level != page.page_level){
-                neighbor = deSerializePage(
-                        ((PageNoLeaf)neighbor).getLeftPage
-                                (neighbor.getNextOffset(Page.MIN)));
-            }
-        }
-        //邻居存在  且可以合并
-        if(neighbor != null && neighbor.page_num + page.page_num < 5){
-            pageMerge(page,stack.peek(),neighbor,2,ancestor,ancestor_offset);
-            return true;
-        }
-        else return false;
-    }
-
-    //页合并（三步）  第一步:将两页合并  第二步：父页删除节点 第三步：祖先页更新索引键
-    private void pageMerge(Page page,Pair pair,Page neighbor,int model,Page ancestor,int ancestor_offset){
-        PageNoLeaf parent = (PageNoLeaf) deSerializePage(pair.page_offset);
-        int offset = pair.node_offset;
-        //特殊情况： 本页已无节点，父页直接删除本页节点即可
-        if(model == 3){
-            parent.offsetDelete(offset,1);
-        }else {
-            //第一步
-            neighbor.merge(page, model);
-            if (page.page_num != 0) throw new RuntimeException("逻辑错误");
-            if (parent.getLeftPage(offset) != page.page_offset) throw new RuntimeException("逻辑错误");
-            //第二步
-            parent.offsetDelete(offset,1);
-            if (parent.page_num == 0 && root == parent) root = neighbor;
-            //第三步
-            if (ancestor != null) {
-                PageNoLeaf ancestor_page = (PageNoLeaf) deSerializePage(ancestor.page_offset);
-                ancestor_page.findIndex(ancestor_offset);
-            }
-        }
-    }
-
     /****************************页缓冲池*******************************/
 
-    //在缓冲池中删除某一页
-    public void deletePageInCache(int page_offset){
-        Page page = null;
-        //遍历page_cache  找到page_offset对应的page
-        for (Page pageInCache : page_cache.keySet()) {
-            //目标页地址的页在缓冲池中
-            if(pageInCache.page_offset == page_offset){
-                page = pageInCache;
-                break;
-            }
-        }
-        if(page == null)  return;
-        else{page_cache.remove(page);}
-    }
-
-    //根据页地址返回页 1.若页缓冲池中存在 直接取  2.若缓冲池中不存在，刷新页缓冲池并且反序列化
-    public Page deSerializePage(int page_offset){
-
-        //该页偏移量的对应的页
-        Page page = null;
-
-        //遍历page_cache  找到page_offset对应的page
-        for (Page pageInCache : page_cache.keySet()) {
-            //目标页地址的页在缓冲池中
-            if(pageInCache.page_offset == page_offset){
-                page = pageInCache;
-                break;
-            }
-        }
-
-        //如果页不在缓冲池中  反序列化后插入或替换page_cache
-        if(page == null) {
-            //根据偏移量反序列页
-            byte[] data;
-            data = BytesIO.readDataInto(Page.PAGE_HEAD,page_offset,table_name);
-            page = Page.deSerialize(data,this);
-            //缓冲池大小小于5    直接插入
-            if(page_cache.size() < 100/*TODO*/) {page_cache.put(page,0); return page;}
-            //缓冲池大小不小于5  遍历page_cache 找到 value最小的替换
-            Page min_key = getMinKey();
-            //关闭min_key页
-            closePage(min_key);
-            //删除调用值最小的page
-            page_cache.remove(min_key);
-            page_cache.put(page,0);
-        }
-        //如果页在缓冲池中   将调用值加一
-        else{
-            int value = page_cache.get(page);
-            page_cache.replace(page,value + 1);
-        }
-        return page;
-
-    }
-
-    //找到缓冲池中调取数最小的页
-    private Page getMinKey() {
-        Page min_key = null;
-        int min_value = 999999;
-        for (Map.Entry<Page, Integer> entry : page_cache.entrySet()) {
-            Page key = entry.getKey();
-            Integer value = entry.getValue();
-            if (value < min_value) {
-                min_value = value;
-                min_key = key;
-            }
-        }
-        //水个异常
-        if(min_key == null) throw new RuntimeException("无法找到最小的页");
-        return min_key;
-    }
-
-    //关闭某一个页
-    public void closePage(Page page) {
-        page.serializeHead();  //序列化页头
-        BytesIO.writeDataOut(page.page_buffer.array(),page.page_offset,table_name);  //写入磁盘
+    //根据页地址返回页
+    public Page getPage(int page_offset) {
+        return cache.getPage(page_offset);
     }
 
     //关闭该表   即序列化缓冲池中所有的表
     public void close(){
         //检查删除日志中是否有需要合并的
-        allLeafPageMergeCheck();
+        eventBus.execute(new PageManagerEvent.MergeEvent());
         //关闭缓冲池中的所有的页
-        for (Page page : page_cache.keySet()) {
-            closePage(page);
-        }
-        closePage(root);
-        BytesIO.writeDataOut(serializeTable(),0,table_name);
-
+        cache.close();
         //写入
         writeTable();
     }
@@ -1215,16 +651,16 @@ public class Table {
             str.append(i).append(" ");
         return str.toString();
     }
+    //返回默认主键 并且加一
+    public int getDefault_key(int addNum){int nowKey = this.default_key; this.default_key += addNum; return nowKey;}
     //-------------------//
 
     //返回字段属性的迭代器
     protected Collection<TableColumn> getFieldsProperty(){return fields.values();}
     //返回字段的数据长度
     protected short getFieldLength(String name){return fields.get(name).length;}
-    //返回默认主键 并且加一
-    protected int getDefault_key(int addNum){int nowKey = this.default_key; this.default_key += addNum; return nowKey;}
     //修改根页
-    protected void setRoot(Page page){this.root = page;}
+    public void setRoot(Page page){this.root = page;}
 
 
 

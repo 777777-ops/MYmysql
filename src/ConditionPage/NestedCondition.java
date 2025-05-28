@@ -11,7 +11,7 @@ import java.util.regex.Pattern;
 public class NestedCondition extends Condition{
     private final List<String> separator = new ArrayList<>();          //分隔符
     private final List<Condition> conditions = new ArrayList<>();      //条件集
-    private boolean ALL;                                               //全部查询的标号
+    public boolean ALL;                                               //全部查询的标号
 
 
     public NestedCondition(String conditionStr,Table table) throws IllegalArgumentException{
@@ -73,7 +73,7 @@ public class NestedCondition extends Condition{
 
     //返回该条件下可以使用到的索引查询字段
     @Override
-    protected List<Condition> getIndexKeys(){
+    public List<Condition> getIndexKeys(){
 
         List<Condition> indexs = new ArrayList<>();   //维护一个动态改变的字段索引集
         for (int i = 0; i < conditions.size(); i++) {
@@ -101,7 +101,7 @@ public class NestedCondition extends Condition{
 
     //给出一个数据数组，要求根据当前的条件返回数据是否符合条件
     @Override
-    protected boolean isEligible(Object[] values){
+    public boolean isEligible(Object[] values){
         boolean result = conditions.get(0).isEligible(values);
         for (int i = 1; i < conditions.size(); i++) {
              boolean sep = separator.get(i - 1).equals("and");       //sep是true时说明是and
@@ -109,67 +109,6 @@ public class NestedCondition extends Condition{
              if(result && sep) result = conditions.get(i).isEligible(values);
         }
         return result;
-    }
-
-    //筛选出符合条件的所有SearchResult
-    private Collection<Table.SearchResult> filter(){
-        List<Condition> indexs = getIndexKeys();
-        List<Table.SearchResult> first = new ArrayList<>();
-        //第一步，先从indexs中利用索引过滤出第一批结果
-        if(indexs.isEmpty())        //没有索引可以利用  直接顺序
-            first = table.searchLinked();
-        else                        //有索引可以利用 但要区别主键索引和其他索引
-        {
-            for (Condition index : indexs) {
-                SimpleCondition sc = (SimpleCondition) index;
-                //主键索引
-                if(sc.field.equals(table.getPrimaryKey()))
-                    first.addAll(table.searchPrimary(sc.data, sc.operator));
-                    //其他索引
-                else {
-                    /*TODO*/
-                }
-            }
-        }
-        //第二步，从first中过滤掉不符合条件的  重复的
-        LinkedHashMap<Integer,Table.SearchResult> map = new LinkedHashMap<>();
-        for (Table.SearchResult searchResult : first) {
-            Integer key = searchResult.offset + searchResult.page_offset;
-            //符合条件 并且 在map中没有重复
-            if(ALL || (isEligible(searchResult.values) && !map.containsKey(key))){
-                map.put(key,searchResult);
-            }
-        }
-        return map.values();
-
-    }
-
-    //查询接口
-    public Object[][] runSearch(){
-        Collection<Table.SearchResult> filter = filter();
-        Object[][] result = new Object[filter.size()][];
-        int index = 0;
-        for (Table.SearchResult sr : filter) {
-            result[index++] = sr.values;
-        }
-        return result;
-    }
-
-    //删除接口
-    public void runDelete(){
-        //观察是否可以直接利用主键
-        List<Condition> indexs = getIndexKeys();
-        if(indexs.size() == 1 && indexs.get(0) instanceof SimpleCondition sc){
-            if(sc.field.equals(table.getPrimaryKey())){
-                table.delete(sc.data,sc.operator);
-                return;
-            }
-        }
-
-        //无法利用主键
-        Collection<Table.SearchResult> filter = filter();
-        for (Table.SearchResult sr : filter)
-            table.delete(sr);
     }
 
     /************检查格式**************/
@@ -279,6 +218,7 @@ public class NestedCondition extends Condition{
         columnHashMap.put("工资", new Table.TableColumn(Float.class,(short) 0,false,false,false));
         Table t0 = new Table("t0",columnHashMap,"编号");
 
+        new TableFrame(t0);
         t0.insert("68", "'伟'", "105", "890.12");
         t0.insert("69", "'秀英'", "48", "901.23");
         t0.insert("70", "'娜磊'", "9", "1234.56");
@@ -361,7 +301,6 @@ public class NestedCondition extends Condition{
         t0.insert("73", "'磊小红'", "90", "4567.89");
         t0.insert("74", "'洋建国'", "33", "5678.9");
         t0.insert("75", "'小明建军'", "78", "6789.01");
-        new TableFrame(t0);
         t0.insert("89", "'陈建国'", "87", "2345.67");
         t0.insert("90", "'杨建军'", "30", "3456.78");
         t0.insert("91", "'赵桂花'", "111", "4567.89");

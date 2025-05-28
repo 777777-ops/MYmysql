@@ -86,7 +86,7 @@ public class RootFrame extends JFrame {
             container.revalidate();
             container.repaint();
             int offset = Integer.parseInt(page_offset);
-            Page page = table.deSerializePage(offset);
+            Page page = table.getPage(offset);
             createPageNodes(page);
         }
         cardLayout.show(container, page_offset);

@@ -1,11 +1,7 @@
-import Memory.ByteTools;
-import Memory.IndexRecord;
-
 import java.io.*;
-import java.nio.ByteBuffer;
 import java.util.*;
 
-public class Main {
+public class Trytttttt {
     public static void main2(String[] args) {
 
         BufferedOutputStream bos;
@@ -57,7 +53,7 @@ public class Main {
     }
 
     public static void main9(String[] args) {
-        new Main().function2();
+        new Trytttttt().function2();
     }
 
     public static void main(String[] args) {

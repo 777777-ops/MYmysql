@@ -1,12 +1,7 @@
 package ConditionPage;
 
-import Memory.IndexRecord;
 import Memory.Table;
-import UI.RootFrame;
 
-import javax.swing.*;
-import javax.swing.table.DefaultTableModel;
-import javax.swing.table.TableColumn;
 import java.util.List;
 
 
